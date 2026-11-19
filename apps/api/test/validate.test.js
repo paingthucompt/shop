@@ -1,11 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseId, parseLangs, parseStyle, isShopeeUrl, publicError } from "../src/validate.js";
+import { parseId, parseLangs, parseStyle, parseAngle, isShopeeUrl, publicError } from "../src/validate.js";
 
 test("parseStyle: product by default, presenter allowed, junk rejected", () => {
   assert.equal(parseStyle(undefined), "product");
   assert.equal(parseStyle("presenter"), "presenter");
+  assert.equal(parseStyle("in_action"), "in_action");
   assert.throws(() => parseStyle("cartoon"), (e) => e.status === 400);
+});
+
+test("parseAngle: auto by default, known angles allowed, junk rejected", () => {
+  assert.equal(parseAngle(undefined), "auto");
+  assert.equal(parseAngle("problem_solution"), "problem_solution");
+  assert.throws(() => parseAngle("fake_testimonial"), (e) => e.status === 400);
 });
 import { validateScript, clampScript, SCRIPT_LIMITS, foreignScriptIssue, truncateText } from "../src/script-rules.js";
 import { shortName, generateScript } from "../../../packages/providers/src/llm.js";

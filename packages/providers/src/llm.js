@@ -1,5 +1,6 @@
 // Script writer: one separate script per language (th / my) — never mixed.
 // Uses any OpenAI-compatible Chat Completions endpoint (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL).
+import { buildProductPrompt } from "./seedance.js";
 
 const LANG_NAME = { th: "Thai (ภาษาไทย)", my: "Burmese (မြန်မာဘာသာ, Unicode)" };
 const CTA_HINT = {
@@ -7,7 +8,23 @@ const CTA_HINT = {
   my: 'a short call to action telling viewers to tap the basket to buy, e.g. "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါ"',
 };
 
-export function buildScriptPrompt(product, lang, seconds = 10) {
+/**
+ * Script angle = how the script sells. "auto" lets the model pick (the original behaviour). Every angle
+ * still obeys the honesty rules below: no fake reviews, no fake urgency, no exaggerated results.
+ */
+const ANGLE_GUIDE = {
+  auto: "",
+  problem_solution: `Angle: problem → solution. The hook names a small everyday problem the viewer recognises; the lines show how this product solves it.`,
+  review: `Angle: honest first-person creator review ("I tried this…"). Give your own impression of what you see and use — never pretend to quote other customers, star ratings or sales numbers.`,
+  unboxing: `Angle: unboxing / first impression. The hook builds curiosity about what is inside; the lines react to the look, feel and first use.`,
+  soft_sell: `Angle: soft sell. Relaxed, friendly, lifestyle tone — focus on how the product fits into a normal day; the call to action is a gentle suggestion.`,
+  hard_sell: `Angle: direct-response. Lead with the strongest benefit, keep sentences punchy, end with a clear direct call to action. Mention a price, discount or deadline ONLY if it is in the product details — never invent urgency ("only today", "almost sold out").`,
+  storytelling: `Angle: mini story. A tiny relatable moment (before → discovering the product → after) told in the first person; realistic, no dramatic transformations.`,
+};
+
+export const SCRIPT_ANGLES = Object.keys(ANGLE_GUIDE);
+
+export function buildScriptPrompt(product, lang, seconds = 10, angle = "auto") {
   const maxLines = seconds <= 10 ? 3 : 4;
   return [
     `You write voiceover scripts for short vertical TikTok Shop / Shopee affiliate videos.`,
@@ -17,6 +34,8 @@ export function buildScriptPrompt(product, lang, seconds = 10) {
     `Product: ${product.title}`,
     product.description ? `Details: ${product.description}` : "",
     product.price ? `Price: ${product.price} ${product.currency || "THB"}` : "",
+    ``,
+    ANGLE_GUIDE[angle] || "",
     ``,
     `Rules:`,
     `- Only claim what the product details support. No medical claims, no "best in the world", no fake discounts.`,
@@ -78,21 +97,61 @@ const MOCK = {
   },
 };
 
-export async function generateScript(product, lang, { seconds = 10 } = {}) {
-  if (!LANG_NAME[lang]) throw new Error(`unsupported lang ${lang}`);
-  const { LLM_API_KEY, LLM_BASE_URL = "https://api.openai.com/v1", LLM_MODEL = "gpt-4.1-mini" } = process.env;
-  if (!LLM_API_KEY) return { ...MOCK[lang](product), mock: true };
+const llmEnabled = () => Boolean(process.env.LLM_API_KEY);
 
+/** one user message → the model's text reply */
+async function chat(content, temperature) {
+  const { LLM_API_KEY, LLM_BASE_URL = "https://api.openai.com/v1", LLM_MODEL = "gpt-4.1-mini" } = process.env;
   const res = await fetch(`${LLM_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${LLM_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: LLM_MODEL,
-      temperature: 0.8,
-      messages: [{ role: "user", content: buildScriptPrompt(product, lang, seconds) }],
-    }),
+    body: JSON.stringify({ model: LLM_MODEL, temperature, messages: [{ role: "user", content }] }),
   });
   if (!res.ok) throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const data = await res.json();
-  return parseScript(data.choices?.[0]?.message?.content || "");
+  return data.choices?.[0]?.message?.content || "";
+}
+
+export async function generateScript(product, lang, { seconds = 10, angle = "auto" } = {}) {
+  if (!LANG_NAME[lang]) throw new Error(`unsupported lang ${lang}`);
+  if (!llmEnabled()) return { ...MOCK[lang](product), mock: true };
+  return parseScript(await chat(buildScriptPrompt(product, lang, seconds, angle), 0.8));
+}
+
+export const VIDEO_PROMPT_MAX = 2000;
+
+/**
+ * Ask the LLM for a ready-to-paste prompt for a video tool the user runs themselves (Google Flow / Veo,
+ * Seedance, Kling …): the house prompt for the chosen style, rewritten into a timed shot list for this
+ * product that follows the beats of the script. All product-accuracy / no-text / no-speech rules stay.
+ */
+export function buildVideoPromptRequest(product, { style = "product", seconds = 10, script } = {}) {
+  const beats = script
+    ? [`hook: ${script.hook}`, ...(script.lines || []).map((l, i) => `line ${i + 1}: ${l}`), `call to action: ${script.cta}`]
+    : [];
+  return [
+    `You write prompts for AI video tools such as Google Flow (Veo). The user attaches the product photos as reference images.`,
+    `Rewrite the BASE PROMPT below into ONE ready-to-paste prompt for this specific product: a ${seconds}-second vertical 9:16 clip.`,
+    `Make it a concrete shot list with timings (e.g. "0–3s: …"), choosing actions, setting and props that suit this product and how it is really used.`,
+    beats.length ? `A voiceover is added later. Match the shots, in order, to the beats of this script (it may be in Thai or Burmese — read it, do not copy it):\n${beats.map((b) => `- ${b}`).join("\n")}` : "",
+    `Keep every rule of the base prompt: exact product appearance and consistency, no on-screen text, captions or logos, nobody speaks (no lip movement), audio only natural product sounds, no music.`,
+    `Only show features the product details support.`,
+    `Write in English. Return ONLY the prompt text — no title, no markdown, no explanation. At most ${VIDEO_PROMPT_MAX - 200} characters.`,
+    ``,
+    `Product: ${product.title}`,
+    product.description ? `Details: ${String(product.description).slice(0, 1500)}` : "",
+    ``,
+    `BASE PROMPT:`,
+    buildProductPrompt(product, { style }),
+  ].filter((l) => l !== "").join("\n");
+}
+
+/** → { prompt, mock? }  Without an LLM key the house prompt for the style is returned as is. */
+export async function generateVideoPrompt(product, opts = {}) {
+  if (!llmEnabled()) return { prompt: buildProductPrompt(product, { style: opts.style }), mock: true };
+  const text = (await chat(buildVideoPromptRequest(product, opts), 0.7))
+    .replace(/^```\w*\s*|\s*```$/g, "")
+    .trim();
+  if (!text) throw new Error("LLM returned an empty video prompt");
+  return { prompt: text.slice(0, VIDEO_PROMPT_MAX) };
 }

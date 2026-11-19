@@ -6,9 +6,9 @@ import { rm } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import crypto from "node:crypto";
 import { query } from "@app/db";
-import { llm, shopee } from "@app/providers";
+import { llm, shopee, seedance } from "@app/providers";
 import { ah, requireAuth, STORAGE_DIR, mediaUrl } from "../lib.js";
-import { httpError, parseId, parseLangs, isShopeeUrl } from "../validate.js";
+import { httpError, parseId, parseLangs, parseAngle, parseStyle, isShopeeUrl } from "../validate.js";
 import { validateScript, clampScript } from "../script-rules.js";
 
 const r = Router();
@@ -111,7 +111,7 @@ r.post("/", upload.array("images", 4), ah(async (req, res) => {
 
 r.get("/:id", ah(async (req, res) => {
   const p = await ownProduct(req.userId, req.params.id);
-  const { rows: scripts } = await query("SELECT lang, hook, lines, captions, cta, updated_at FROM scripts WHERE product_id = $1", [p.id]);
+  const { rows: scripts } = await query("SELECT lang, hook, lines, captions, cta, angle, updated_at FROM scripts WHERE product_id = $1", [p.id]);
   res.json({ ...present(p), scripts: Object.fromEntries(scripts.map((s) => [s.lang, s])) });
 }));
 
@@ -173,24 +173,44 @@ r.delete("/:id", ah(async (req, res) => {
   res.status(204).end();
 }));
 
-const saveScript = (productId, lang, s) => query(
-  `INSERT INTO scripts (product_id, lang, hook, lines, captions, cta) VALUES ($1,$2,$3,$4,$5,$6)
+/** angle: set when the AI writes the script; null (a user edit) keeps the stored one */
+const saveScript = (productId, lang, s, angle = null) => query(
+  `INSERT INTO scripts (product_id, lang, hook, lines, captions, cta, angle) VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,'auto'))
    ON CONFLICT (product_id, lang) DO UPDATE SET hook = EXCLUDED.hook, lines = EXCLUDED.lines,
-     captions = EXCLUDED.captions, cta = EXCLUDED.cta, updated_at = now()
-   RETURNING lang, hook, lines, captions, cta, updated_at`,
-  [productId, lang, s.hook, JSON.stringify(s.lines), JSON.stringify(s.captions || []), s.cta],
+     captions = EXCLUDED.captions, cta = EXCLUDED.cta, angle = COALESCE($7, scripts.angle), updated_at = now()
+   RETURNING lang, hook, lines, captions, cta, angle, updated_at`,
+  [productId, lang, s.hook, JSON.stringify(s.lines), JSON.stringify(s.captions || []), s.cta, angle],
 ).then((r) => r.rows[0]);
 
-/** AI-write separate scripts. body: { langs: ["th","my"] } */
+/**
+ * AI-write separate scripts + a video prompt for tools the user runs themselves (Google Flow …).
+ * body: { langs: ["th","my"], angle?: "auto"|"problem_solution"|…, style?: one of CLIP_STYLES }
+ * → { scripts: { th, my }, video_prompt: { video_prompt, video_prompt_style, mock } | null }
+ */
 r.post("/:id/scripts/generate", aiLimiter, ah(async (req, res) => {
   const p = await ownProduct(req.userId, req.params.id);
   const langs = parseLangs(req.body.langs);
-  const out = {};
+  const angle = parseAngle(req.body.angle);
+  const style = parseStyle(req.body.style);
+  const seconds = seedance.clipSettings().duration;
+  const scripts = {};
   for (const lang of langs) {
-    const s = await llm.generateScript(p, lang, { seconds: Number(process.env.SEEDANCE_DURATION || 10) });
-    out[lang] = { ...(await saveScript(p.id, lang, clampScript(s))), mock: !!s.mock };
+    const s = await llm.generateScript(p, lang, { seconds, angle });
+    scripts[lang] = { ...(await saveScript(p.id, lang, clampScript(s), angle)), mock: !!s.mock };
   }
-  res.json(out);
+  // the scripts are already saved: a failing video prompt must not lose them
+  let videoPrompt = null;
+  try {
+    const vp = await llm.generateVideoPrompt(p, { style, seconds, script: scripts[langs[0]] });
+    const { rows } = await query(
+      "UPDATE products SET video_prompt = $2, video_prompt_style = $3 WHERE id = $1 RETURNING video_prompt, video_prompt_style",
+      [p.id, vp.prompt, style],
+    );
+    videoPrompt = { ...rows[0], mock: !!vp.mock };
+  } catch (err) {
+    console.warn(`video prompt for product ${p.id} failed: ${err.message}`);
+  }
+  res.json({ scripts, video_prompt: videoPrompt });
 }));
 
 /** user edits a script. body: { hook, lines: [], captions?: [] (on-screen text per line), cta } */

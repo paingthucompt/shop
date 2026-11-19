@@ -55,7 +55,9 @@ npm test     # provider unit tests + ထိုင်း/မြန်မာ video
 |---|---|---|
 | `SEEDANCE_API_KEY`, `SEEDANCE_MODEL` | BytePlus ModelArk console | Seedance 2.5 model ID ကို model list ကနေ ကူးပါ။ Resource pack ဝယ်ထားရပါမယ် |
 | `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` | OpenAI / OpenRouter / Gemini (OpenAI-compatible) | **မြန်မာစာ quality** ကို model အမျိုးမျိုး စမ်းပါ |
+| `CLIP_MODE=gemini`, `GEMINI_API_KEY`, `GEMINI_VIDEO_*` | aistudio.google.com → API keys (paid tier) | Seedance အစား Gemini Omni video (၃–၁၅ s)။ စမ်းရန်: `node --env-file=.env packages/providers/scripts/try-gemini-video.mjs ပုံ.jpg` (≈ $0.10) |
 | `TTS_PROVIDER=azure`, `AZURE_SPEECH_KEY` | Azure AI Speech | Production မှာ ဒါကိုပဲ သုံးပါ။ `edge` က တရားဝင်မဟုတ်လို့ prototype အတွက်ပဲ |
+| `TTS_PROVIDER=gemini`, `GEMINI_TTS_VOICE` | `GEMINI_API_KEY` တစ်ခုတည်း | သဘာဝအကျဆုံး (TikTok creator လို ပြောပုံ)၊ ထိုင်း+မြန်မာ နှစ်ခုလုံး ရ၊ video တစ်ခု ≈ $0.003 |
 | `TTS_PROVIDER=edge`, `EDGE_TTS_BIN` | `brew install pipx && pipx install edge-tts` | အခမဲ့ (key မလို)။ `EDGE_TTS_BIN=$HOME/.local/bin/edge-tts`။ ဆက်တိုက်ခေါ်ရင် ခဏ throttle ဖြစ်တတ်လို့ engine က backoff နဲ့ retry ပြီး ဘာသာတူ အခြား voice ကို ပြောင်းသုံးပါတယ် |
 | `SHOPEE_APP_ID`, `SHOPEE_SECRET` | affiliate.shopee.co.th → Open API | Shopee link ထည့်ရင် affiliate short link အလိုအလျောက် လုပ်ပေးပါတယ် |
 

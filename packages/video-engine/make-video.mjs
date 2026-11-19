@@ -154,6 +154,7 @@ function wrap(text, lang, emPx, maxWidth) {
 // ---------------------------------------------------------------- TTS
 // TTS_PROVIDER=azure → Azure AI Speech (official; production)
 // TTS_PROVIDER=edge  → edge-tts CLI (unofficial endpoint; prototype only)
+// TTS_PROVIDER=gemini → Gemini TTS (GEMINI_API_KEY) — expressive, steerable "creator" delivery
 const xmlEscape = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 async function ttsAzure(text, voice, rate, outFile) {
@@ -173,6 +174,59 @@ async function ttsAzure(text, voice, rate, outFile) {
   });
   if (!res.ok) throw new Error(`Azure TTS ${res.status}: ${(await res.text()).slice(0, 200)}`);
   writeFileSync(outFile, Buffer.from(await res.arrayBuffer()));
+}
+
+// Gemini TTS: the text is spoken verbatim; delivery is steered by a style note, not by the text.
+// One request per line, so every line gets the same voice + style for a consistent read.
+const GEMINI_STYLE = {
+  th: "a real Thai TikTok Shop creator talking to a friend: warm, upbeat, natural and conversational, lively but not shouting, a little fast-paced",
+  my: "a real Burmese (Myanmar) TikTok / Facebook seller talking to a friend: warm, upbeat, natural and conversational, lively but not shouting, a little fast-paced",
+};
+const geminiVoice = (lang) => process.env[`GEMINI_TTS_VOICE_${lang.toUpperCase()}`] || process.env.GEMINI_TTS_VOICE || "Leda";
+
+async function ttsGemini(text, lang, outFile) {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) throw new Error("GEMINI_API_KEY not set");
+  const base = (process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "");
+  const body = {
+    model: process.env.GEMINI_TTS_MODEL || "gemini-3.8-flash-tts",
+    input: [{
+      type: "user_input",
+      content: [{ type: "text", text, annotations: [{ type: "speech_metadata", style: process.env.GEMINI_TTS_STYLE || GEMINI_STYLE[lang] }] }],
+    }],
+    response_format: { type: "audio" },
+    generation_config: { speech_config: [{ voice: geminiVoice(lang) }] },
+  };
+  let last = "";
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const res = await fetch(`${base}/interactions`, {
+      method: "POST",
+      headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const textBody = await res.text();
+    if (res.ok) {
+      const audio = findAudio(JSON.parse(textBody));
+      if (!audio) throw new Error("Gemini TTS returned no audio");
+      writeFileSync(outFile, Buffer.from(audio, "base64")); // audio/wav, 24 kHz mono 16-bit
+      return;
+    }
+    last = `${res.status}: ${textBody.slice(0, 200)}`;
+    if (res.status !== 429 && res.status < 500) break; // bad request: retrying won't help
+    if (attempt < 4) await new Promise((r) => setTimeout(r, 1500 * 2 ** (attempt - 1)));
+  }
+  throw new Error(`Gemini TTS ${last}`);
+}
+
+/** base64 audio from an interaction (REST: steps[].content[] item with type "audio") */
+function findAudio(node) {
+  if (!node || typeof node !== "object") return null;
+  if (node.type === "audio" && typeof node.data === "string") return node.data;
+  for (const v of Array.isArray(node) ? node : Object.values(node)) {
+    const hit = findAudio(v);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 // absolute path when edge-tts is not on PATH (e.g. pipx installs to ~/.local/bin)
@@ -226,8 +280,9 @@ function trimSilence(file) {
   return out;
 }
 
-async function tts(text, voice, rate, outFile) {
-  if (TTS_PROVIDER === "azure") await ttsAzure(text, voice, rate, outFile);
+async function tts(text, voice, rate, outFile, lang) {
+  if (TTS_PROVIDER === "gemini") await ttsGemini(text, lang, (outFile = outFile.replace(/\.mp3$/, ".wav")));
+  else if (TTS_PROVIDER === "azure") await ttsAzure(text, voice, rate, outFile);
   else ttsEdge(text, voice, rate, outFile);
   let file = outFile;
   try {
@@ -313,7 +368,7 @@ if (useTts) {
     try { run(EDGE_TTS, ["--help"]); } catch { die(`edge-tts not found (${EDGE_TTS}) — run: pipx install edge-tts, set EDGE_TTS_BIN to its path, or use TTS_PROVIDER=none`); }
   }
   for (const [i, s] of spoken.entries()) {
-    const { file, dur } = await tts(s[voiceLang], voice, rate, join(work, `vo_${i}.mp3`));
+    const { file, dur } = await tts(s[voiceLang], voice, rate, join(work, `vo_${i}.mp3`), voiceLang);
     clips.push({ ...s, file, dur });
     log(`TTS ${i + 1}/${spoken.length}: ${dur.toFixed(2)}s  ${s[voiceLang]}`);
   }
