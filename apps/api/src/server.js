@@ -1,0 +1,64 @@
+import express from "express";
+import helmet from "helmet";
+import cors from "cors";
+import { createReadStream, existsSync, statSync } from "node:fs";
+import { join, normalize, sep } from "node:path";
+import { query } from "@app/db";
+import { shopee } from "@app/providers";
+import { ah, requireAuth, STORAGE_DIR, verifyMedia } from "./lib.js";
+import authRoutes from "./routes/auth.js";
+import productRoutes from "./routes/products.js";
+import jobRoutes from "./routes/jobs.js";
+
+const app = express();
+app.disable("x-powered-by");
+app.set("trust proxy", 1); // behind nginx
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
+app.use(cors({ origin: (process.env.WEB_ORIGIN || "http://localhost:5173").split(","), credentials: false }));
+app.use(express.json({ limit: "1mb" }));
+
+app.get("/api/health", ah(async (_req, res) => {
+  await query("SELECT 1");
+  res.json({ ok: true });
+}));
+
+app.use("/api/auth", authRoutes);
+app.use("/api/products", productRoutes);
+app.use("/api/jobs", jobRoutes);
+
+// Shopee affiliate product search (uses the platform's Shopee credentials)
+app.get("/api/shopee/search", requireAuth, ah(async (req, res) => {
+  if (!shopee.shopeeEnabled()) return res.status(503).json({ error: "Shopee API not configured" });
+  res.json(await shopee.searchProducts(String(req.query.q || ""), { page: Number(req.query.page || 1) }));
+}));
+
+// Signed media (videos, images). URL: /api/media/<path>?exp=..&sig=..
+app.get(/^\/api\/media\/(.+)$/, (req, res) => {
+  let rel;
+  try { rel = req.params[0].split("/").map(decodeURIComponent).join("/"); } catch { return res.status(400).end(); }
+  if (!verifyMedia(rel, req.query.exp, String(req.query.sig || ""))) return res.status(403).end();
+  const abs = normalize(join(STORAGE_DIR, rel));
+  if (!abs.startsWith(STORAGE_DIR + sep) || !existsSync(abs)) return res.status(404).end();
+  const size = statSync(abs).size;
+  const type = abs.endsWith(".mp4") ? "video/mp4" : abs.endsWith(".srt") ? "text/plain; charset=utf-8" : abs.endsWith(".png") ? "image/png" : abs.endsWith(".webp") ? "image/webp" : "image/jpeg";
+  if (req.query.download) res.setHeader("Content-Disposition", `attachment; filename="${abs.split(sep).pop()}"`);
+  const range = req.headers.range?.match(/bytes=(\d*)-(\d*)/);
+  if (range) { // video seeking
+    const start = range[1] ? Number(range[1]) : 0;
+    const end = range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+    if (start >= size || start > end) return res.status(416).setHeader("Content-Range", `bytes */${size}`).end();
+    res.writeHead(206, { "Content-Type": type, "Content-Length": end - start + 1, "Content-Range": `bytes ${start}-${end}/${size}`, "Accept-Ranges": "bytes" });
+    return createReadStream(abs, { start, end }).pipe(res);
+  }
+  res.writeHead(200, { "Content-Type": type, "Content-Length": size, "Accept-Ranges": "bytes" });
+  createReadStream(abs).pipe(res);
+});
+
+app.use((err, _req, res, _next) => {
+  const status = err.status || (err.name === "MulterError" ? 400 : 500);
+  if (status >= 500) console.error(err);
+  res.status(status).json({ error: status >= 500 ? "server error" : err.message });
+});
+
+const port = Number(process.env.API_PORT || 4000);
+app.listen(port, "127.0.0.1", () => console.log(`API → http://127.0.0.1:${port}`));

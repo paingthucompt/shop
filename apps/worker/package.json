@@ -1,0 +1,14 @@
+{
+  "name": "@app/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/worker.js",
+  "dependencies": {
+    "@app/db": "*",
+    "@app/providers": "*",
+    "@app/video-engine": "*",
+    "bullmq": "^5.34.0",
+    "ioredis": "^5.4.2"
+  }
+}

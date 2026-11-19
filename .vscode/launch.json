@@ -1,0 +1,26 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "API (debug)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/apps/api/src/server.js",
+      "runtimeArgs": ["--env-file=.env"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Worker (debug)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/apps/worker/src/worker.js",
+      "runtimeArgs": ["--env-file=.env"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ],
+  "compounds": [
+    { "name": "API + Worker", "configurations": ["API (debug)", "Worker (debug)"] }
+  ]
+}

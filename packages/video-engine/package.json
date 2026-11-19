@@ -1,0 +1,11 @@
+{
+  "name": "@app/video-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "bin": { "make-video": "make-video.mjs" },
+  "dependencies": {
+    "harfbuzzjs": "^1.6.4"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "affiliate-video-app",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "db:migrate": "node --env-file=.env packages/db/migrate.js",
+    "credits:add": "node --env-file=.env packages/db/add-credits.js",
+    "dev": "concurrently -n api,worker,web -c blue,magenta,green \"npm:dev:api\" \"npm:dev:worker\" \"npm:dev:web\"",
+    "dev:api": "node --env-file=.env --watch apps/api/src/server.js",
+    "dev:worker": "node --env-file=.env --watch apps/worker/src/worker.js",
+    "dev:web": "npm --workspace apps/web run dev",
+    "build:web": "npm --workspace apps/web run build",
+    "test": "node --test apps/api/test/*.test.js packages/providers/test/*.test.js packages/video-engine/test/*.test.js"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
