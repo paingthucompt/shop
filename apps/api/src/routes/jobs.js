@@ -42,6 +42,7 @@ async function buildQuote(userId, productId, langs, style = "product") {
     scripts.map((s) => [s.lang, foreignScriptIssue(s.lang, s)]).filter(([, issue]) => issue),
   );
   const cost = COST();
+  const clip = seedance.clipSettings();
   const balance = user?.credits ?? 0;
   return {
     product_id: productId,
@@ -53,13 +54,13 @@ async function buildQuote(userId, productId, langs, style = "product") {
     missing_scripts: missing,
     script_issues: scriptIssues,
     clip: {
-      mode: seedance.clipMode(),
-      // style only changes the Seedance prompt; the free photo clip has no people
+      mode: clip.mode,
+      // style only changes the AI video prompt (Seedance / Gemini); the free photo clip has no people
       style,
-      style_applies: seedance.clipMode() === "seedance",
-      model: process.env.SEEDANCE_MODEL || null,
-      duration_s: Number(process.env.SEEDANCE_DURATION || 10),
-      resolution: process.env.SEEDANCE_RESOLUTION || "720p",
+      style_applies: clip.mode === "seedance" || clip.mode === "gemini",
+      model: clip.model,
+      duration_s: clip.duration,
+      resolution: clip.resolution,
       reference_images: Math.min(4, (product.images || []).length),
       prompt: seedance.buildProductPrompt(product, { style }),
     },
@@ -75,7 +76,7 @@ r.get("/quote", ah(async (req, res) => {
 }));
 
 /**
- * body: { product_id, langs: ["th","my"], style: "product"|"presenter", confirm_cost }
+ * body: { product_id, langs: ["th","my"], style: one of CLIP_STYLES, confirm_cost }
  * confirm_cost must equal the quoted cost — the user explicitly agreed to this price.
  * Credits are charged up front and refunded on failure.
  */

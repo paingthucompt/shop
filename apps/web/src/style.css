@@ -59,5 +59,6 @@ th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--li
 .quote h3 { margin-top: 0; }
 table.kv th { width: 130px; color: var(--muted); font-weight: 500; vertical-align: top; }
 .prompt { white-space: pre-wrap; font-size: 12px; background: var(--bg); padding: 10px; border-radius: 8px; max-height: 260px; overflow: auto; }
+textarea.prompt { width: 100%; box-sizing: border-box; resize: vertical; max-height: none; font-family: ui-monospace, Menlo, monospace; }
 .status { font-weight: 600; }
 .status.succeeded { color: var(--ok); } .status.failed { color: var(--bad); } .status.running, .status.queued { color: #b7791f; }

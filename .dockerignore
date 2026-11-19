@@ -1,0 +1,14 @@
+node_modules
+**/node_modules
+.env
+.env.*
+!.env.example
+storage
+samples
+**/dist
+.work*
+*.log
+.git
+.vscode
+.DS_Store
+**/test

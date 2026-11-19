@@ -2,7 +2,7 @@ import express from "express";
 import helmet from "helmet";
 import cors from "cors";
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { join, normalize, sep } from "node:path";
+import { join, normalize, resolve, sep } from "node:path";
 import { query } from "@app/db";
 import { shopee } from "@app/providers";
 import { ah, requireAuth, STORAGE_DIR, verifyMedia } from "./lib.js";
@@ -12,7 +12,7 @@ import jobRoutes from "./routes/jobs.js";
 
 const app = express();
 app.disable("x-powered-by");
-app.set("trust proxy", 1); // behind nginx
+app.set("trust proxy", 1); // behind nginx / Cloud Run
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.use(cors({ origin: (process.env.WEB_ORIGIN || "http://localhost:5173").split(","), credentials: false }));
 app.use(express.json({ limit: "1mb" }));
@@ -54,11 +54,22 @@ app.get(/^\/api\/media\/(.+)$/, (req, res) => {
   createReadStream(abs).pipe(res);
 });
 
+// Production: the built dashboard (apps/web/dist) is served by the API itself — one origin, no CORS.
+// In development Vite serves it on :5173 and proxies /api here.
+const WEB_DIST = process.env.WEB_DIST ? resolve(process.env.WEB_DIST) : null;
+if (WEB_DIST && existsSync(join(WEB_DIST, "index.html"))) {
+  app.use(express.static(WEB_DIST, { index: false, maxAge: "1h" }));
+  // client-side routes (/login, /products/1 …) all load index.html; unknown /api paths stay 404 JSON
+  app.get(/^(?!\/api\/).*/, (_req, res) => res.sendFile(join(WEB_DIST, "index.html")));
+}
+
 app.use((err, _req, res, _next) => {
   const status = err.status || (err.name === "MulterError" ? 400 : 500);
   if (status >= 500) console.error(err);
   res.status(status).json({ error: status >= 500 ? "server error" : err.message });
 });
 
-const port = Number(process.env.API_PORT || 4000);
-app.listen(port, "127.0.0.1", () => console.log(`API → http://127.0.0.1:${port}`));
+// Cloud Run sets PORT and needs 0.0.0.0; locally stay on loopback
+const port = Number(process.env.PORT || process.env.API_PORT || 4000);
+const host = process.env.HOST || (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
+app.listen(port, host, () => console.log(`API → http://${host}:${port}`));

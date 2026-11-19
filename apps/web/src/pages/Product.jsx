@@ -43,7 +43,51 @@ function ScriptEditor({ productId, lang, script, onSaved }) {
 const STYLES = {
   product: "Product demo (hands, close-ups, real use)",
   presenter: "With a presenter (AI person holds & shows the product, voiceover in each language)",
+  unboxing: "Unboxing (hands open the package and reveal the product)",
+  hero: "Premium hero shot (studio, 360° rotation, no people)",
+  macro: "Macro details (texture and key details up close)",
+  in_action: "Product in action (real everyday use and result)",
+  flatlay: "Flat-lay (aesthetic top-down arrangement)",
 };
+
+/** how the AI script sells — same angle is used for every selected language */
+const ANGLES = {
+  auto: "AI picks",
+  problem_solution: "Problem → solution",
+  review: "Honest review",
+  unboxing: "Unboxing / first impression",
+  soft_sell: "Soft sell (lifestyle)",
+  hard_sell: "Direct sell (strong CTA)",
+  storytelling: "Mini story",
+};
+
+/** Prompt for a video tool the user runs themselves (Google Flow …) — copy, paste, attach the photos. */
+function VideoPromptCard({ prompt, style, mock }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { setCopied(false); }
+  }
+  return (
+    <div className="card">
+      <div className="row between">
+        <h3>🎬 Video prompt <span className="muted">· {STYLES[style]?.split(" (")[0] || style}</span></h3>
+        <div className="row">
+          <button className="ghost small" onClick={copy}>{copied ? "Copied ✓" : "Copy"}</button>
+          <a className="button ghost small" href="https://flow.google.com/" target="_blank" rel="noreferrer">Open Flow ↗</a>
+        </div>
+      </div>
+      <textarea className="prompt" readOnly rows={8} value={prompt} onFocus={(e) => e.target.select()} />
+      <p className="muted">
+        Paste it into Google Flow (or another AI video tool) and attach the same product photos as references.
+        {mock ? " (Basic template — add an LLM key for a prompt written for this product and script.)" : ""}
+      </p>
+    </div>
+  );
+}
 
 /** Pre-spend gate: shows exactly what will be charged and generated; nothing is spent until "Confirm". */
 function QuotePanel({ quote, busy, onConfirm, onCancel }) {
@@ -55,21 +99,22 @@ function QuotePanel({ quote, busy, onConfirm, onCancel }) {
         <tbody>
           <tr><th>Videos</th><td>{quote.langs.map((l) => LANGS[l]).join(" + ")} (one separate video each)</td></tr>
           <tr><th>Cost</th><td><strong>{quote.cost} credits</strong> — you have {quote.balance}, {quote.enough_credits ? `${quote.balance_after} left after` : "not enough credits"}</td></tr>
-          <tr><th>Product clip</th><td>{c.mode === "seedance"
-            ? `AI video (Seedance ${c.model || ""}) · ${c.duration_s}s · ${c.resolution} · ${c.reference_images} reference photo(s)`
+          <tr><th>Product clip</th><td>{c.mode === "seedance" || c.mode === "gemini"
+            ? `AI video (${c.mode === "gemini" ? "Gemini" : "Seedance"} ${c.model || ""}) · ${c.duration_s}s · ${c.resolution} · ${c.reference_images} reference photo(s)`
             : c.mode === "photos"
               ? `Your ${c.reference_images} photo(s) with zoom/pan motion · ${c.duration_s}s · free (no AI video)`
               : "Sample clip (CLIP_MODE=sample — for testing only)"}</td></tr>
-          <tr><th>Style</th><td>{STYLES[c.style]}{!c.style_applies && c.style === "presenter"
-            ? <span className="error"> — needs a Seedance key; this video uses your photos without a presenter</span> : null}</td></tr>
+          <tr><th>Style</th><td>{STYLES[c.style]}{!c.style_applies && c.style !== "product"
+            ? <span className="error"> — needs an AI video key (Seedance or Gemini); this video uses your photos with zoom/pan instead</span> : null}</td></tr>
           <tr><th>Voiceover</th><td>{{
             none: "None (product sound + text only)",
             edge: "Free AI voice (Edge) — Thai: Premwadee · Myanmar: Nilar",
             azure: "AI voice (Azure Speech) — Thai: Premwadee · Myanmar: Nilar",
+            gemini: "Natural AI voice (Gemini) — creator-style delivery",
           }[quote.voiceover] || quote.voiceover}</td></tr>
         </tbody>
       </table>
-      {c.mode === "seedance" && <details><summary>Prompt sent to the video AI</summary><pre className="prompt">{c.prompt}</pre></details>}
+      {c.style_applies && <details><summary>Prompt sent to the video AI</summary><pre className="prompt">{c.prompt}</pre></details>}
       {Object.entries(quote.script_issues || {}).map(([lang, issue]) => (
         <p key={lang} className="error">⚠ {LANGS[lang]}: {issue}. Fix the script below, save it, then try again.</p>
       ))}
@@ -93,6 +138,7 @@ export default function Product() {
   const [error, setError] = useState("");
   const [quote, setQuote] = useState(null);
   const [style, setStyle] = useState("product");
+  const [angle, setAngle] = useState("auto");
 
   useEffect(() => { api(`/products/${id}`).then(setP).catch((e) => setError(e.message)); }, [id]);
   const selected = Object.keys(langs).filter((l) => langs[l]);
@@ -102,8 +148,8 @@ export default function Product() {
   async function generate() {
     setBusy("scripts"); setError("");
     try {
-      const r = await api(`/products/${id}/scripts/generate`, { method: "POST", body: { langs: selected } });
-      setP((cur) => ({ ...cur, scripts: { ...cur.scripts, ...r } }));
+      const r = await api(`/products/${id}/scripts/generate`, { method: "POST", body: { langs: selected, angle, style } });
+      setP((cur) => ({ ...cur, scripts: { ...cur.scripts, ...r.scripts }, ...(r.video_prompt || {}), video_prompt_mock: !!r.video_prompt?.mock }));
     } catch (e) { setError(e.message); }
     setBusy("");
   }
@@ -186,13 +232,20 @@ export default function Product() {
           ))}
         </div>
         <div className="row">
-          <strong>AI video style:</strong>
-          {Object.entries(STYLES).map(([k, label]) => (
-            <label key={k} className="check"><input type="radio" name="style" checked={style === k} onChange={() => setStyle(k)} /> {label.split(" (")[0]}</label>
-          ))}
+          <label className="check"><strong>Script angle:</strong>
+            <select value={angle} onChange={(e) => setAngle(e.target.value)} disabled={!!busy}>
+              {Object.entries(ANGLES).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+            </select>
+          </label>
+          <label className="check"><strong>AI video style:</strong>
+            <select value={style} onChange={(e) => setStyle(e.target.value)} disabled={!!busy}>
+              {Object.entries(STYLES).map(([k, label]) => <option key={k} value={k}>{label.split(" (")[0]}</option>)}
+            </select>
+          </label>
         </div>
+        <p className="muted">{STYLES[style]}</p>
         <div className="row">
-          <button className="ghost" onClick={generate} disabled={!!busy || !selected.length}>{busy === "scripts" ? "Writing…" : "✨ AI write scripts"}</button>
+          <button className="ghost" onClick={generate} disabled={!!busy || !selected.length}>{busy === "scripts" ? "Writing…" : "✨ AI write scripts + video prompt"}</button>
           <button onClick={getQuote} disabled={!!busy || !!quote || !selected.length || selected.some((l) => !p.scripts?.[l])}>
             {busy === "quote" ? "Checking…" : "🎬 Create videos"}
           </button>
@@ -200,12 +253,15 @@ export default function Product() {
         {error && <p className="error">{error}</p>}
       </div>
 
+      {p.video_prompt && <VideoPromptCard prompt={p.video_prompt} style={p.video_prompt_style} mock={p.video_prompt_mock} />}
+
       {quote && <QuotePanel quote={quote} busy={busy === "video"} onConfirm={confirmVideo} onCancel={() => setQuote(null)} />}
 
       <div className="two">
         {selected.map((lang) => (
           <div key={lang} className="card">
-            <h3>{LANGS[lang]}</h3>
+            <h3>{LANGS[lang]}{p.scripts?.[lang]?.angle && p.scripts[lang].angle !== "auto"
+              ? <span className="muted"> · {ANGLES[p.scripts[lang].angle]}</span> : null}</h3>
             <ScriptEditor productId={id} lang={lang} script={p.scripts?.[lang]} onSaved={(l, s) => setP((cur) => ({ ...cur, scripts: { ...cur.scripts, [l]: s } }))} />
           </div>
         ))}

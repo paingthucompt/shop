@@ -1,13 +1,14 @@
-// Video pipeline worker:  clip (Seedance, or free photo clip)  →  render:th  →  render:my  →  done
+// Video pipeline worker:  clip (Seedance / Gemini, or free photo clip)  →  render:th  →  render:my  →  done
 // Each stage is idempotent: after a crash/restart BullMQ re-runs the job and finished stages are skipped
-// (an existing Seedance task is resumed, never paid for twice).
+// (an existing Seedance task / Gemini interaction is resumed, never paid for twice).
 import { Worker } from "bullmq";
 import IORedis from "ioredis";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { query, failJob } from "@app/db";
-import { seedance } from "@app/providers";
+import { seedance, geminiVideo } from "@app/providers";
 import { renderVideo, makePhotoClip } from "@app/video-engine";
 
 const QUEUE_NAME = "video-jobs";
@@ -20,6 +21,13 @@ const setJob = (id, fields) => {
     `UPDATE video_jobs SET ${keys.map((k, i) => `${k} = $${i + 2}`).join(", ")}, updated_at = now() WHERE id = $1`,
     [id, ...keys.map((k) => fields[k])],
   );
+};
+
+/** scratch space on the local disk for ffmpeg (kept until the job succeeds so a retry can reuse it) */
+const localWorkDir = (jobId) => {
+  const d = join(process.env.WORK_DIR || join(tmpdir(), "avs-work"), String(jobId));
+  mkdirSync(d, { recursive: true });
+  return d;
 };
 
 const toDataUrl = (img) => `data:${img.mime || "image/jpeg"};base64,${readFileSync(img.path).toString("base64")}`;
@@ -45,7 +53,23 @@ async function makeClip(job, product, dir) {
     // so render enough photo footage for the longest one; without voice keep the normal length
     const base = Number(process.env.SEEDANCE_DURATION || 10);
     const withVoice = (process.env.TTS_PROVIDER || "none").toLowerCase() !== "none";
-    await makePhotoClip({ images, out: clip, duration: withVoice ? Math.max(base, 16) : base });
+    // ffmpeg writes to local disk first: STORAGE_DIR may be a Cloud Storage mount (no in-place seeks)
+    const local = join(localWorkDir(job.id), "clip.mp4");
+    await makePhotoClip({ images, out: local, duration: withVoice ? Math.max(base, 16) : base });
+    copyFileSync(local, clip);
+  } else if (mode === "gemini") {
+    // the interaction id shares the seedance_task_id column, prefixed so it is never polled at the wrong provider
+    const saved = job.seedance_task_id?.startsWith("gemini:") ? job.seedance_task_id.slice(7) : null;
+    const bytes = await geminiVideo.generateVideo(product, product.images.map(toDataUrl), {
+      style: job.style || "product",
+      resumeId: saved,
+      onId: async (id) => {
+        await setJob(job.id, { seedance_task_id: `gemini:${id}` });
+        console.log(`[job ${job.id}] gemini interaction ${id}`);
+      },
+      onStatus: (s) => console.log(`[job ${job.id}] gemini ${s}`),
+    });
+    writeFileSync(clip, bytes);
   } else if (mode === "sample") {
     console.warn(`[job ${job.id}] CLIP_MODE=sample → using samples/sample-product-clip.mp4`);
     copyFileSync(SAMPLE_CLIP, clip);
@@ -80,14 +104,22 @@ async function processJob(jobId) {
     await setJob(job.id, { status: "running", stage: `render:${lang}` });
     const { rows: [script] } = await query("SELECT hook, lines, captions, cta FROM scripts WHERE product_id = $1 AND lang = $2", [product.id, lang]);
     if (!script) throw new Error(`no ${lang} script`);
+    // render on local disk, then copy the finished files into storage (see localWorkDir)
+    const work = localWorkDir(job.id);
     const r = await renderVideo({
-      workDir: join(dir, "work"),
+      workDir: join(work, "work"),
       clipPath: clip,
-      outPath: join(dir, "video.mp4"),
+      outPath: join(work, "video.mp4"),
       lang,
       script,
       onLog: (l) => process.env.DEBUG_ENGINE && process.stdout.write(l),
     });
+    for (const k of ["path", "srt"]) {
+      if (!r[k]) continue;
+      const dest = join(dir, basename(r[k]));
+      copyFileSync(r[k], dest);
+      r[k] = dest;
+    }
     await query(
       "INSERT INTO videos (job_id, lang, path, srt_path, duration) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (job_id, lang) DO NOTHING",
       [job.id, lang, r.path, r.srt, r.duration],
@@ -95,6 +127,7 @@ async function processJob(jobId) {
     console.log(`[job ${job.id}] ${lang} → ${r.path}`);
   }
   await setJob(job.id, { status: "succeeded", stage: "done", error: null });
+  rmSync(localWorkDir(job.id), { recursive: true, force: true });
 }
 
 async function fail(jobId, err) {
