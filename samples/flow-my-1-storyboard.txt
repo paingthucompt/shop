@@ -1,0 +1,14 @@
+Create ONE landscape 16:9 storyboard sheet for a 15-second vertical (9:16) TikTok Shop / Shopee product video ad, in the style of a professional ad-agency storyboard: dark navy header, bold modern typography, high contrast, clean grid.
+Use the attached product photos for the product in every panel — exactly the same shape, colours, materials, logo and label text; never redesign it.
+
+Header: the product name "Seagull 250. Mini Food Chopper" and the headline in Burmese (Myanmar): "ကြက်သွန်လှီးတိုင်း မျက်ရည်ကျနေရတာ ပင်ပန်းပြီလား။". Small tag at the right: "AI Storyboard · 15s".
+
+Below the header, 4 numbered panels in time order, each a vertical 9:16 photorealistic frame with a rounded label at the top and the on-screen text overlaid in large bold Burmese (Myanmar) letters:
+1. Label "1. အစပိုင်း (0–4s)". Scene: A close-up handheld shot showing the complete cream Seagull mini food chopper on a kitchen counter in soft daylight. On-screen text: "ကြက်သွန်လှီးတိုင်း မျက်ရည်ကျနေရတာ ပင်ပန်းပြီလား။".
+2. Label "2. ပစ္စည်းမိတ်ဆက် (4–8s)". Scene: A pair of hands unhappily peeling onions on a cutting board, looking frustrated. On-screen text: "ကြက်သွန်လှီးရတာ ပင်ပန်းနေပြီလား".
+3. Label "3. အားသာချက် (8–13s)". Scene: Hands easily pick up the cordless chopper to move it around the kitchen island. On-screen text: "တစ်ချက်နှိပ်ရုံနဲ့ ကြိတ်နိုင်ပြီ".
+4. Label "4. နိဂုံး + ဝယ်ယူရန် (13–15s)". Scene: A final steady shot of the fully visible cream Seagull chopper resting neatly on the counter next to finely chopped ingredients. On-screen text: "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါ" with a yellow button "🛒 အခုပဲ ဝယ်လိုက်ပါ!" and the price "299 THB".
+
+Visual style of the frames: natural handheld UGC, real everyday location where this product is normally used, soft daylight, hands (and if needed a body seen from the shoulders down, face not shown) using the product.
+Write every Burmese (Myanmar) text EXACTLY as given above, letter for letter, with correct Burmese (Myanmar) script; no other text.
+Do not add prices, discounts, warranties, delivery promises, ratings, shop names or badges that are not given above.

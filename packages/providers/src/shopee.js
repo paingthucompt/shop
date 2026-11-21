@@ -49,3 +49,13 @@ export async function generateShortLink(originUrl, subIds = []) {
   }`);
   return data.generateShortLink.shortLink;
 }
+
+/** one product by shop + item id (official Affiliate API) → { productName, imageUrl, price, offerLink, shopName } | null */
+export async function getProduct(shopId, itemId) {
+  const data = await graphql(`{
+    productOfferV2(shopId: ${Number(shopId)}, itemId: ${Number(itemId)}, page: 1, limit: 1) {
+      nodes { itemId productName imageUrl price commissionRate productLink offerLink shopName }
+    }
+  }`);
+  return data.productOfferV2?.nodes?.[0] || null;
+}

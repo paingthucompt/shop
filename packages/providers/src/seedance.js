@@ -28,8 +28,17 @@ export function clipMode() {
 }
 
 /** model / length / resolution of the clip the current mode makes (shown in the quote, used for script length) */
-export function clipSettings() {
-  const mode = clipMode();
+/** the AI video provider used when the user picks "AI video" for one video: Gemini, else Seedance, else null */
+export function aiVideoProvider() {
+  const forced = String(process.env.AI_VIDEO_PROVIDER || "").toLowerCase();
+  if (forced === "gemini" && process.env.GEMINI_API_KEY) return "gemini";
+  if (forced === "seedance" && seedanceEnabled()) return "seedance";
+  if (process.env.GEMINI_API_KEY) return "gemini";
+  return seedanceEnabled() ? "seedance" : null;
+}
+
+/** model / length / resolution of the clip a given mode makes (default: CLIP_MODE) */
+export function clipSettings(mode = clipMode()) {
   if (mode === "gemini") return { mode, ...geminiSettings() };
   const c = cfg();
   return { mode, model: mode === "seedance" ? c.model || null : null, duration: c.duration, resolution: c.resolution };
@@ -92,6 +101,9 @@ const STYLE_SPECS = {
 };
 
 export const CLIP_STYLES = Object.keys(STYLE_SPECS);
+
+/** the "look" sentence of a style (setting, camera, who is in shot) — reused by the Flow prompts */
+export const styleLook = (style) => (STYLE_SPECS[style] || STYLE_SPECS.product).look;
 
 export function buildProductPrompt(product, { style = "product" } = {}) {
   const spec = STYLE_SPECS[style] || STYLE_SPECS.product;

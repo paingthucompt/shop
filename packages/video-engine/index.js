@@ -8,6 +8,9 @@ import { fileURLToPath } from "node:url";
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "make-video.mjs");
 
 export { makePhotoClip, buildPhotoClipArgs } from "./photo-clip.js";
+export { probeClip, normalizeClip, buildNormalizeArgs } from "./normalize-clip.js";
+export { makeSceneClip, buildSceneClipArgs, planSceneShots } from "./scene-clip.js";
+export { ttsProviderFor, voiceEnabled } from "./tts-provider.js";
 
 export const VOICES = {
   th: { female: "th-TH-PremwadeeNeural", male: "th-TH-NiwatNeural" },
@@ -18,13 +21,15 @@ export const VOICES = {
  * Build a single-language engine config from a DB script row.
  * script: { hook, lines: string[], captions?: string[], cta }
  */
-export function buildConfig({ clipPath, outPath, lang, script, voice = "female", rate, productVolume = 0.55, speakHook = true, fitToVoice = true }) {
+export function buildConfig({ clipPath, outPath, lang, script, voice = "female", rate, speed, productVolume = 0.55, speakHook = true, fitToVoice = true }) {
   return {
     video: clipPath,
     output: outPath,
     languages: [lang],
     voices: { [lang]: VOICES[lang]?.[voice] || voice },
     rates: { [lang]: rate || (lang === "th" ? "+8%" : "+0%") },
+    // voiceover speed multiplier chosen by the user (1 = natural pace); absent → VOXCPM_SPEED for voxcpm
+    ...(Number(speed) > 0 ? { speeds: { [lang]: Number(speed) } } : {}),
     productVolume,
     fitToVoice,
     // the hook is spoken first (from ~0.15s) while it shows at the top — stops the scroll

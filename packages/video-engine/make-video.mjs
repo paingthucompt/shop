@@ -14,6 +14,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as hb from "harfbuzzjs";
+import { ttsProviderFor } from "./tts-provider.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FONT_DIR = join(HERE, "fonts");
@@ -155,6 +156,8 @@ function wrap(text, lang, emPx, maxWidth) {
 // TTS_PROVIDER=azure → Azure AI Speech (official; production)
 // TTS_PROVIDER=edge  → edge-tts CLI (unofficial endpoint; prototype only)
 // TTS_PROVIDER=gemini → Gemini TTS (GEMINI_API_KEY) — expressive, steerable "creator" delivery
+// TTS_PROVIDER=voxcpm → local VoxCPM2 server (tools/voxcpm-server.py) — free, can clone your own voice
+// TTS_PROVIDER_TH / TTS_PROVIDER_MY override TTS_PROVIDER for one language (e.g. Thai gemini, Burmese voxcpm)
 const xmlEscape = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 async function ttsAzure(text, voice, rate, outFile) {
@@ -198,7 +201,7 @@ async function ttsGemini(text, lang, outFile) {
     generation_config: { speech_config: [{ voice: geminiVoice(lang) }] },
   };
   let last = "";
-  for (let attempt = 1; attempt <= 4; attempt++) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
     const res = await fetch(`${base}/interactions`, {
       method: "POST",
       headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
@@ -213,9 +216,95 @@ async function ttsGemini(text, lang, outFile) {
     }
     last = `${res.status}: ${textBody.slice(0, 200)}`;
     if (res.status !== 429 && res.status < 500) break; // bad request: retrying won't help
-    if (attempt < 4) await new Promise((r) => setTimeout(r, 1500 * 2 ** (attempt - 1)));
+    if (res.status === 429 && /per day/i.test(textBody)) break; // daily quota (free tier: 10/day) — waiting won't help today
+    if (attempt < 5) {
+      // free tier: a few requests per minute — wait as long as Google asks ("retry in 23s" / retryDelay)
+      const asked = Number((textBody.match(/retry in (\d+(?:\.\d+)?)s/i) || textBody.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/) || [])[1]);
+      const waitMs = res.status === 429 && asked ? Math.min(65, asked + 1) * 1000 : 1500 * 2 ** (attempt - 1);
+      console.warn(`⚠ Gemini TTS ${res.status} — waiting ${(waitMs / 1000).toFixed(0)}s`);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
   }
   throw new Error(`Gemini TTS ${last}`);
+}
+
+// VoxCPM2 runs on this computer (tools/voxcpm-server.py); a 2B model on a laptop takes a while per line
+async function ttsVoxcpm(text, lang, outFile) {
+  const base = (process.env.VOXCPM_URL || "http://127.0.0.1:8808").replace(/\/$/, "");
+  let res;
+  try {
+    res = await fetch(`${base}/tts`, {
+      method: "POST",
+      signal: AbortSignal.timeout(Number(process.env.VOXCPM_TIMEOUT_MS || 300_000)),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, lang }),
+    });
+  } catch (err) {
+    throw new Error(`VoxCPM server not reachable at ${base} (start it: ~/voxcpm/.venv/bin/python tools/voxcpm-server.py) — ${err.message}`);
+  }
+  if (!res.ok) throw new Error(`VoxCPM ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  writeFileSync(outFile, Buffer.from(await res.arrayBuffer())); // audio/wav
+}
+
+/**
+ * Voiceover speed: the user's choice for this video (cfg.speeds), else VOXCPM_SPEED_MY / VOXCPM_SPEED for
+ * the local VoxCPM voice, else 1. Applied with ffmpeg atempo, which keeps the pitch.
+ */
+function voiceSpeed(cfg, lang, provider, env = process.env) {
+  const own = Number(cfg.speeds?.[lang]);
+  const n = own > 0 ? own
+    : provider === "voxcpm" ? Number(env[`VOXCPM_SPEED_${lang.toUpperCase()}`] || env.VOXCPM_SPEED || 1) : 1;
+  return Number.isFinite(n) ? Math.min(2, Math.max(0.5, n)) : 1;
+}
+
+function speedUp(file, speed) {
+  const out = file.replace(/\.\w+$/, `.x${speed}.wav`);
+  run("ffmpeg", ["-v", "error", "-y", "-i", file, "-af", `atempo=${speed}`, out]);
+  return out;
+}
+
+/** silences inside an audio file → [{ start, end }] (ffmpeg silencedetect) */
+function silences(file, noise = "-38dB", minSec = 0.3) {
+  const r = spawnSync("ffmpeg", ["-hide_banner", "-i", file, "-af", `silencedetect=noise=${noise}:d=${minSec}`, "-f", "null", "-"], { encoding: "utf8" });
+  const out = [];
+  let start = null;
+  for (const line of String(r.stderr || "").split("\n")) {
+    const a = line.match(/silence_start: (-?[\d.]+)/);
+    const b = line.match(/silence_end: ([\d.]+)/);
+    if (a) start = Number(a[1]);
+    if (b && start !== null) { out.push({ start: Math.max(0, start), end: Number(b[1]) }); start = null; }
+  }
+  return out;
+}
+
+/**
+ * Gemini TTS for ALL lines of one language in ONE request (free tier allows only a few requests per
+ * minute): lines are joined with long pauses, then the audio is cut at the n-1 longest pauses so every
+ * line still gets its own clip and caption timing. Returns null if the pauses can't be found reliably.
+ */
+async function ttsGeminiBatch(texts, lang, workDir) {
+  if (texts.length < 2) return null;
+  const full = join(workDir, "vo_all.wav");
+  await ttsGemini(texts.join("\n<long pause>\n"), lang, full);
+  const total = probe(full).duration;
+  const gaps = silences(full).filter((g) => g.start > 0.3 && g.end < total - 0.3);
+  if (gaps.length < texts.length - 1) return null;
+  const cuts = gaps.sort((a, b) => (b.end - b.start) - (a.end - a.start)).slice(0, texts.length - 1)
+    .map((g) => (g.start + g.end) / 2).sort((a, b) => a - b);
+  const bounds = [0, ...cuts, total];
+  const parts = [];
+  for (let i = 0; i < texts.length; i++) {
+    const seg = join(workDir, `vo_${i}.wav`);
+    run("ffmpeg", ["-v", "error", "-y", "-i", full, "-ss", bounds[i].toFixed(3), "-to", bounds[i + 1].toFixed(3), "-c:a", "pcm_s16le", seg]);
+    let file = seg;
+    try { const t = trimSilence(seg); if (probe(t).duration > 0.3) file = t; } catch { /* keep untrimmed */ }
+    const dur = probe(file).duration;
+    // a cut in the wrong place leaves a near-empty or overlong part — then fall back to one request per line
+    const expect = estimateSeconds(texts[i], lang);
+    if (dur < 0.35 || dur > expect * 3 + 1.5) return null;
+    parts.push({ file, dur });
+  }
+  return parts;
 }
 
 /** base64 audio from an interaction (REST: steps[].content[] item with type "audio") */
@@ -280,9 +369,28 @@ function trimSilence(file) {
   return out;
 }
 
+// Gemini TTS out of quota / down (e.g. free tier: 10 requests a day) or the local VoxCPM server not
+// running → the rest of this video uses the free Edge voice instead of failing the whole job
+let geminiOff = false;
+let edgeOk = null;
+const edgeAvailable = () => (edgeOk ??= spawnSync(EDGE_TTS, ["--help"], { encoding: "utf8" }).status === 0);
+function geminiFailed(err) {
+  if (!edgeAvailable()) throw err;
+  geminiOff = true;
+  console.warn(`⚠ ${TTS_PROVIDER} voice unavailable (${String(err.message).slice(0, 140)}) — using the free Edge voice for this video`);
+}
+
+const WAV_TTS = { gemini: ttsGemini, voxcpm: ttsVoxcpm };
+
 async function tts(text, voice, rate, outFile, lang) {
-  if (TTS_PROVIDER === "gemini") await ttsGemini(text, lang, (outFile = outFile.replace(/\.mp3$/, ".wav")));
-  else if (TTS_PROVIDER === "azure") await ttsAzure(text, voice, rate, outFile);
+  if (WAV_TTS[TTS_PROVIDER] && !geminiOff) {
+    try {
+      await WAV_TTS[TTS_PROVIDER](text, lang, (outFile = outFile.replace(/\.mp3$/, ".wav")));
+    } catch (err) {
+      geminiFailed(err);
+      ttsEdge(text, voice, rate, (outFile = outFile.replace(/\.wav$/, ".mp3")));
+    }
+  } else if (TTS_PROVIDER === "azure") await ttsAzure(text, voice, rate, outFile);
   else ttsEdge(text, voice, rate, outFile);
   let file = outFile;
   try {
@@ -302,10 +410,10 @@ const estimateSeconds = (text, lang) => {
 const argv = process.argv.slice(2);
 const cfgPath = argv.find((a) => !a.startsWith("--"));
 if (!cfgPath) die("usage: node make-video.mjs config.json [--no-tts]");
-const TTS_PROVIDER = (process.env.TTS_PROVIDER || "edge").toLowerCase();
-const noTts = argv.includes("--no-tts") || TTS_PROVIDER === "none";
 const langArg = argv[argv.indexOf("--lang") + 1];
 const ONLY = argv.includes("--lang") ? langArg : null;
+const TTS_PROVIDER = ttsProviderFor(ONLY);
+const noTts = argv.includes("--no-tts") || TTS_PROVIDER === "none";
 const cfgDir = dirname(resolve(cfgPath));
 const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
 const P = (p) => resolve(cfgDir, p);
@@ -367,8 +475,20 @@ if (useTts) {
   if (TTS_PROVIDER === "edge") {
     try { run(EDGE_TTS, ["--help"]); } catch { die(`edge-tts not found (${EDGE_TTS}) — run: pipx install edge-tts, set EDGE_TTS_BIN to its path, or use TTS_PROVIDER=none`); }
   }
+  let batch = null;
+  if (TTS_PROVIDER === "gemini") {
+    try { batch = await ttsGeminiBatch(spoken.map((s) => s[voiceLang]), voiceLang, work); } catch (err) {
+      if (/per day|429/.test(err.message)) geminiFailed(err); // quota: don't spend more requests per line
+      else console.warn(`⚠ one-request TTS failed (${err.message.slice(0, 120)}) — one request per line`);
+    }
+    if (batch) log(`TTS: 1 request for ${spoken.length} lines`);
+    else if (spoken.length > 1 && !geminiOff) console.warn("⚠ could not split the one-request voiceover by its pauses — one request per line");
+  }
+  const speed = voiceSpeed(cfg, voiceLang, TTS_PROVIDER);
+  if (Math.abs(speed - 1) >= 0.005) log(`voice speed ×${speed}`);
   for (const [i, s] of spoken.entries()) {
-    const { file, dur } = await tts(s[voiceLang], voice, rate, join(work, `vo_${i}.mp3`), voiceLang);
+    let { file, dur } = batch ? batch[i] : await tts(s[voiceLang], voice, rate, join(work, `vo_${i}.mp3`), voiceLang);
+    if (Math.abs(speed - 1) >= 0.005) { file = speedUp(file, speed); dur = probe(file).duration; }
     clips.push({ ...s, file, dur });
     log(`TTS ${i + 1}/${spoken.length}: ${dur.toFixed(2)}s  ${s[voiceLang]}`);
   }
