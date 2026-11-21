@@ -9,7 +9,7 @@ import { basename, join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { query, failJob } from "@app/db";
 import { seedance, geminiVideo } from "@app/providers";
-import { renderVideo, makePhotoClip } from "@app/video-engine";
+import { renderVideo, makePhotoClip, makeSceneClip, normalizeClip, voiceEnabled } from "@app/video-engine";
 
 const QUEUE_NAME = "video-jobs";
 const STORAGE_DIR = resolve(process.env.STORAGE_DIR || "./storage");
@@ -43,8 +43,26 @@ async function makeClip(job, product, dir) {
   if (job.clip_path && existsSync(job.clip_path)) return job.clip_path;
   await setJob(job.id, { status: "running", stage: "clip" });
 
-  const mode = seedance.clipMode();
-  if (mode === "photos") {
+  const mode = ["upload", "scenes", "photos"].includes(job.clip_source) ? job.clip_source
+    : job.clip_source === "ai_video" ? seedance.aiVideoProvider()
+    : seedance.clipMode();
+  if (!mode) throw new Error("AI video is not set up (no GEMINI_API_KEY / SEEDANCE_API_KEY)");
+  if (mode === "scenes") {
+    // the product's AI scene images, each shown for its beat's time with zoom / pan
+    const scenes = (product.scenes || []).map((s) => ({ path: s.path, seconds: Number(s.seconds) }));
+    if (!scenes.length || scenes.some((s) => !s.path || !existsSync(s.path))) throw new Error("scene images are missing");
+    const local = join(localWorkDir(job.id), "clip.mp4");
+    await makeSceneClip({ scenes, out: local });
+    console.log(`[job ${job.id}] scene clip from ${scenes.length} image(s)`);
+    copyFileSync(local, clip);
+  } else if (mode === "upload") {
+    // the user's own clip (e.g. from Google Flow) → 9:16 720p H.264 on local disk, then into storage
+    if (!product.clip_path || !existsSync(product.clip_path)) throw new Error("the uploaded clip is missing");
+    const local = join(localWorkDir(job.id), "clip.mp4");
+    const info = normalizeClip({ input: product.clip_path, out: local });
+    console.log(`[job ${job.id}] uploaded clip ${info.duration.toFixed(1)}s → ${info.width}x${info.height}`);
+    copyFileSync(local, clip);
+  } else if (mode === "photos") {
     // free path: the user's own photos with Ken Burns motion (no Seedance cost)
     const images = (product.images || []).map((i) => i.path).filter((p) => existsSync(p));
     if (!images.length) throw new Error("product photos are missing on disk");
@@ -52,7 +70,7 @@ async function makeClip(job, product, dir) {
     // with a voiceover each language's video is cut to its own speech length (Burmese runs longer),
     // so render enough photo footage for the longest one; without voice keep the normal length
     const base = Number(process.env.SEEDANCE_DURATION || 10);
-    const withVoice = (process.env.TTS_PROVIDER || "none").toLowerCase() !== "none";
+    const withVoice = voiceEnabled(job.langs);
     // ffmpeg writes to local disk first: STORAGE_DIR may be a Cloud Storage mount (no in-place seeks)
     const local = join(localWorkDir(job.id), "clip.mp4");
     await makePhotoClip({ images, out: local, duration: withVoice ? Math.max(base, 16) : base });
@@ -112,6 +130,7 @@ async function processJob(jobId) {
       outPath: join(work, "video.mp4"),
       lang,
       script,
+      speed: job.voice_speed?.[lang],
       onLog: (l) => process.env.DEBUG_ENGINE && process.stdout.write(l),
     });
     for (const k of ["path", "srt"]) {

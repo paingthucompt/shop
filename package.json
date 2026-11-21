@@ -19,7 +19,8 @@
     "dev:worker": "node --env-file=.env --watch apps/worker/src/worker.js",
     "dev:web": "npm --workspace apps/web run dev",
     "build:web": "npm --workspace apps/web run build",
-    "test": "node --test apps/api/test/*.test.js packages/providers/test/*.test.js packages/video-engine/test/*.test.js"
+    "test": "node --test apps/api/test/*.test.js packages/providers/test/*.test.js packages/video-engine/test/*.test.js",
+    "voice": "sh tools/voice.sh"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

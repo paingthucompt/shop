@@ -1,0 +1,14 @@
+Create ONE landscape 16:9 storyboard sheet for a 15-second vertical (9:16) TikTok Shop / Shopee product video ad, in the style of a professional ad-agency storyboard: dark navy header, bold modern typography, high contrast, clean grid.
+Use the attached product photos for the product in every panel — exactly the same shape, colours, materials, logo and label text; never redesign it.
+
+Header: the product name "Seagull เครื่องบดสับอาหารไร้สาย 250 มล. สีครีม Mini Food Chopper" and the headline in Thai: "เบื่อไหม? หั่นกระเทียมทีไรแสบมือตลอด". Small tag at the right: "AI Storyboard · 15s".
+
+Below the header, 4 numbered panels in time order, each a vertical 9:16 photorealistic frame with a rounded label at the top and the on-screen text overlaid in large bold Thai letters:
+1. Label "1. เปิดเรื่อง (0–3s)". Scene: Bright kitchen shot showing the cream Seagull mini chopper clearly on the counter. A hand sets down chilies, rubbing sore fingers. On-screen text: "เบื่อไหม? หั่นกระเทียมทีไรแสบมือตลอด".
+2. Label "2. แนะนำสินค้า (3–8s)". Scene: Hand presses the one-touch top button, activating the 2-layer stainless steel blades to mince ingredients inside. On-screen text: "บดสับไร้สาย กดปุ่มเดียว".
+3. Label "3. จุดเด่น (8–12s)". Scene: Hand plugs a USB cable into the cordless motor unit, demonstrating simple recharging. On-screen text: "ใบมีด 2 ชั้น ชาร์จ USB ได้".
+4. Label "4. ปิดท้าย + Call to Action (12–15s)". Scene: Hand lifts the top off, displaying finely minced garlic, ending on the cream chopper standing fully visible. On-screen text: "ราคา 299 บาท กดตะกร้าเหลืองเลย" with a yellow button "🛒 สั่งซื้อเลย!" and the price "299 THB".
+
+Visual style of the frames: natural handheld UGC, real everyday location where this product is normally used, soft daylight, hands (and if needed a body seen from the shoulders down, face not shown) using the product.
+Write every Thai text EXACTLY as given above, letter for letter, with correct Thai script; no other text.
+Do not add prices, discounts, warranties, delivery promises, ratings, shop names or badges that are not given above.

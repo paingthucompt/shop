@@ -1,0 +1,14 @@
+Create ONE landscape 16:9 storyboard sheet for a 15-second vertical (9:16) TikTok Shop / Shopee product video ad, in the style of a professional ad-agency storyboard: dark navy header, bold modern typography, high contrast, clean grid.
+Use the attached product photos for the product in every panel — exactly the same shape, colours, materials, logo and label text; never redesign it.
+
+Header: the product name "Seagull เครื่องบดสับอาหารไร้สาย 250 มล. สีครีม Mini Food Chopper" and the headline in Thai: "สับกระเทียมทีไร น้ำตาไหลทุกที". Small tag at the right: "AI Storyboard · 15s".
+
+Below the header, 4 numbered panels in time order, each a vertical 9:16 photorealistic frame with a rounded label at the top and the on-screen text overlaid in large bold Thai letters:
+1. Label "1. เปิดเรื่อง (0–3s)". Scene: A close-up handheld shot showing the complete cream Seagull mini food chopper on a kitchen counter in soft daylight. On-screen text: "สับกระเทียมทีไร น้ำตาไหลทุกที".
+2. Label "2. แนะนำสินค้า (3–8s)". Scene: A pair of hands unhappily peeling onions on a cutting board, looking frustrated. On-screen text: "เครื่องบดไร้สาย Seagull".
+3. Label "3. จุดเด่น (8–12s)". Scene: Hands place garlic and onion pieces into the chopper cup and press the one-touch top button to blend. On-screen text: "ใบมีด 2 ชั้น คมกริบ".
+4. Label "4. ปิดท้าย + Call to Action (12–15s)". Scene: A final steady shot of the fully visible cream Seagull chopper resting neatly on the counter next to finely chopped ingredients. On-screen text: "พิกัด 299 บาท กดตะกร้าเหลืองเลย" with a yellow button "🛒 สั่งซื้อเลย!" and the price "299 THB".
+
+Visual style of the frames: natural handheld UGC, real everyday location where this product is normally used, soft daylight, hands (and if needed a body seen from the shoulders down, face not shown) using the product.
+Write every Thai text EXACTLY as given above, letter for letter, with correct Thai script; no other text.
+Do not add prices, discounts, warranties, delivery promises, ratings, shop names or badges that are not given above.

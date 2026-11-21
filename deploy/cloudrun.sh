@@ -87,7 +87,7 @@ gcloud secrets describe avs-shopee-secret >/dev/null 2>&1 && SECRETS+=",SHOPEE_S
 # non-secret settings come from .env (image defaults when missing); "@" separates them because
 # values may contain commas
 ENV_VARS="NODE_ENV=production"
-for k in CLIP_MODE TTS_PROVIDER GEMINI_TTS_VOICE GEMINI_VIDEO_MODEL GEMINI_VIDEO_DURATION GEMINI_VIDEO_RESOLUTION \
+for k in CLIP_MODE TTS_PROVIDER TTS_PROVIDER_TH TTS_PROVIDER_MY GEMINI_TTS_VOICE GEMINI_VIDEO_MODEL GEMINI_VIDEO_DURATION GEMINI_VIDEO_RESOLUTION \
          LLM_BASE_URL LLM_MODEL JOB_CREDIT_COST SIGNUP_FREE_CREDITS SCRIPT_GEN_PER_HOUR SHOPEE_APP_ID SHOPEE_AFFILIATE_ENDPOINT; do
   v="$(envval "$k")"; [ -n "$v" ] && ENV_VARS+="@$k=$v"
 done

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseId, parseLangs, parseStyle, parseAngle, isShopeeUrl, publicError } from "../src/validate.js";
+import { parseId, parseLangs, parseStyle, parseAngle, parseClipSource, parseVoiceSpeed, isShopeeUrl, publicError } from "../src/validate.js";
 
 test("parseStyle: product by default, presenter allowed, junk rejected", () => {
   assert.equal(parseStyle(undefined), "product");
@@ -105,4 +105,26 @@ test("clampScript bounds runaway LLM output", () => {
   assert.equal(s.hook.length, SCRIPT_LIMITS.hook);
   assert.equal(s.lines.length, SCRIPT_LIMITS.maxLines);
   assert.ok(s.lines.every((l) => l.length === SCRIPT_LIMITS.line));
+});
+
+test("parseClipSource: auto by default, upload allowed, junk rejected; clip errors read well", () => {
+  assert.equal(parseClipSource(undefined), "auto");
+  assert.equal(parseClipSource("upload"), "upload");
+  assert.equal(parseClipSource("scenes"), "scenes");
+  assert.equal(parseClipSource("photos"), "photos");
+  assert.equal(parseClipSource("ai_video"), "ai_video");
+  assert.match(publicError("scene images are missing"), /make the scene images again/);
+  assert.throws(() => parseClipSource("flow"), (e) => e.status === 400);
+  assert.match(publicError("the uploaded clip is missing"), /upload it again/);
+  assert.match(publicError("ffmpeg failed: Invalid data"), /could not be read/);
+});
+
+test("parseVoiceSpeed: per language, 0.8–1.5 in 0.05 steps, other languages dropped, empty → null", () => {
+  assert.equal(parseVoiceSpeed(undefined), null);
+  assert.equal(parseVoiceSpeed({}), null);
+  assert.deepEqual(parseVoiceSpeed({ th: "1.1", my: 1.234 }), { th: 1.1, my: 1.25 });
+  assert.deepEqual(parseVoiceSpeed({ th: 1.2, my: 1.3 }, ["my"]), { my: 1.3 });
+  assert.throws(() => parseVoiceSpeed({ my: 3 }), /between 0.8 and 1.5/);
+  assert.throws(() => parseVoiceSpeed({ my: "fast" }), /between/);
+  assert.throws(() => parseVoiceSpeed([1.1]), /object/);
 });

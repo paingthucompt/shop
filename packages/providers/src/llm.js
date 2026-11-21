@@ -1,6 +1,7 @@
 // Script writer: one separate script per language (th / my) — never mixed.
 // Uses any OpenAI-compatible Chat Completions endpoint (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL).
-import { buildProductPrompt } from "./seedance.js";
+// With LLM_API_KEY empty it uses GEMINI_API_KEY through Gemini's OpenAI-compatible endpoint.
+import { buildClipPrompt, buildShotRequest, clipSeconds, parseShots } from "./flow-prompt.js";
 
 const LANG_NAME = { th: "Thai (ภาษาไทย)", my: "Burmese (မြန်မာဘာသာ, Unicode)" };
 const CTA_HINT = {
@@ -39,7 +40,7 @@ export function buildScriptPrompt(product, lang, seconds = 10, angle = "auto") {
     ``,
     `Rules:`,
     `- Only claim what the product details support. No medical claims, no "best in the world", no fake discounts.`,
-    `- The product details may be in another language: never copy that text — say it in ${LANG_NAME[lang]}. Brand names and model numbers in Latin letters are fine.`,
+    `- The product name / details may be in another language (e.g. Thai): never copy any of its letters, not even single vowels or tone marks — translate the meaning into ${LANG_NAME[lang]} (e.g. a "ตู้เย็น" is a fridge, "ลิตร" is litres). Brand names and model numbers in Latin letters and digits are fine.`,
     `- hook: max 8 words, stops the scroll (problem, surprise or result). It is SPOKEN first, at 0 seconds, and counts toward the time limit — lead with the benefit, never "hello everyone".`,
     `- lines: ${maxLines - 1}–${maxLines} short sentences describing what the viewer sees and why it is good.`,
     `- captions: one on-screen key phrase per line (2–5 words, max 30 characters), same order as lines. It is NOT the spoken sentence — it is the selling point at a glance for muted viewers (e.g. a spec, a benefit, a number).`,
@@ -97,61 +98,108 @@ const MOCK = {
   },
 };
 
-const llmEnabled = () => Boolean(process.env.LLM_API_KEY);
+const GEMINI_OPENAI_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
+// flash-lite answers in seconds even on the free tier; the bigger flash models often hang there (2026-11-20)
+export const DEFAULT_GEMINI_TEXT_MODEL = "gemini-flash-lite-latest";
+// tried in order when the main model is busy (503 "high demand") or hangs
+export const DEFAULT_GEMINI_FALLBACKS = ["gemini-3.5-flash-lite", "gemini-3.6-flash"];
+
+const listOf = (v) => String(v || "").split(",").map((x) => x.trim()).filter(Boolean);
+
+/**
+ * { key, baseUrl, model } or null (→ built-in sample scripts).
+ *   LLM_API_KEY set     → that provider (LLM_BASE_URL, default OpenAI)
+ *   else GEMINI_API_KEY → Gemini; a leftover non-Gemini LLM_BASE_URL / LLM_MODEL is ignored so the
+ *                         Gemini key is never sent to another provider
+ */
+export function llmConfig(env = process.env) {
+  if (env.LLM_API_KEY) {
+    return {
+      key: env.LLM_API_KEY, baseUrl: env.LLM_BASE_URL || "https://api.openai.com/v1", model: env.LLM_MODEL || "gpt-4.1-mini",
+      fallbacks: listOf(env.LLM_FALLBACK_MODELS),
+    };
+  }
+  if (env.GEMINI_API_KEY) {
+    return {
+      key: env.GEMINI_API_KEY,
+      baseUrl: env.LLM_BASE_URL?.includes("generativelanguage.googleapis.com") ? env.LLM_BASE_URL : GEMINI_OPENAI_URL,
+      model: env.LLM_MODEL?.startsWith("gemini") ? env.LLM_MODEL : DEFAULT_GEMINI_TEXT_MODEL,
+      fallbacks: env.LLM_FALLBACK_MODELS !== undefined ? listOf(env.LLM_FALLBACK_MODELS) : DEFAULT_GEMINI_FALLBACKS,
+    };
+  }
+  return null;
+}
+
+const llmEnabled = () => Boolean(llmConfig());
 
 /** one user message → the model's text reply */
 async function chat(content, temperature) {
-  const { LLM_API_KEY, LLM_BASE_URL = "https://api.openai.com/v1", LLM_MODEL = "gpt-4.1-mini" } = process.env;
-  const res = await fetch(`${LLM_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${LLM_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: LLM_MODEL, temperature, messages: [{ role: "user", content }] }),
-  });
-  if (!res.ok) throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content || "";
+  const { key: LLM_API_KEY, baseUrl: LLM_BASE_URL, model: main, fallbacks = [] } = llmConfig();
+  // providers answer 429/503 ("high demand") in bursts and sometimes hang: cap each try, and move on to
+  // the next fallback model (or retry the last one) instead of waiting minutes on a busy model
+  const timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 40_000);
+  const models = [main, ...fallbacks.filter((m) => m !== main)];
+  let last = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const LLM_MODEL = models[Math.min(attempt - 1, models.length - 1)];
+    try {
+      const res = await fetch(`${LLM_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
+        method: "POST",
+        signal: AbortSignal.timeout(timeoutMs),
+        headers: { Authorization: `Bearer ${LLM_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: LLM_MODEL, temperature, messages: [{ role: "user", content }] }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content || "";
+      }
+      last = `LLM ${res.status} (${LLM_MODEL}): ${(await res.text()).slice(0, 300)}`;
+      if (res.status !== 429 && res.status < 500) break; // bad key / bad request: retrying won't help
+    } catch (err) {
+      last = err.name === "TimeoutError" ? `LLM timed out after ${timeoutMs / 1000}s (${LLM_MODEL})` : `LLM ${err.message}`;
+    }
+    console.warn(`[llm] ${last.slice(0, 160)}${attempt < 3 ? ` — trying ${models[Math.min(attempt, models.length - 1)]}` : ""}`);
+    if (attempt < 3) await new Promise((r) => setTimeout(r, 2000 * attempt));
+  }
+  throw new Error(last);
+}
+
+/** words of a script that contain letters of the OTHER language (e.g. Thai "ตู้" inside a Burmese line) */
+export function foreignWords(script, lang) {
+  const text = [script.hook, ...script.lines, ...(script.captions || []), script.cta].join(" ");
+  const others = Object.entries(SCRIPT_RE).filter(([l]) => l !== lang).map(([, re]) => re);
+  return [...new Set(text.split(/\s+/).filter((w) => others.some((re) => re.test(w))))];
 }
 
 export async function generateScript(product, lang, { seconds = 10, angle = "auto" } = {}) {
   if (!LANG_NAME[lang]) throw new Error(`unsupported lang ${lang}`);
   if (!llmEnabled()) return { ...MOCK[lang](product), mock: true };
-  return parseScript(await chat(buildScriptPrompt(product, lang, seconds, angle), 0.8));
+  // small models copy letters from a product title in the other language (a Thai title → Thai vowels
+  // inside Burmese words). Check every reply and ask again, naming the broken words.
+  const prompt = buildScriptPrompt(product, lang, seconds, angle);
+  let script, bad = [];
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const fix = bad.length
+      ? `\n\nYour previous answer mixed in letters of another language in: ${bad.map((w) => `"${w}"`).join(", ")}. ` +
+        `Write those words fully in ${LANG_NAME[lang]} letters (translate them; Latin brand names and digits are fine). Use NO other script.`
+      : "";
+    script = parseScript(await chat(prompt + fix, attempt === 1 ? 0.8 : 0.5));
+    bad = foreignWords(script, lang);
+    if (!bad.length) return script;
+    console.warn(`[llm] ${lang} script has foreign letters (${bad.join(" ")}) — asking again (${attempt}/3)`);
+  }
+  throw new Error(`the AI kept mixing other-language letters into the ${lang === "my" ? "Burmese" : "Thai"} script (${bad.join(" ")}) — try again or edit it by hand`);
 }
-
-export const VIDEO_PROMPT_MAX = 2000;
 
 /**
- * Ask the LLM for a ready-to-paste prompt for a video tool the user runs themselves (Google Flow / Veo,
- * Seedance, Kling …): the house prompt for the chosen style, rewritten into a timed shot list for this
- * product that follows the beats of the script. All product-accuracy / no-text / no-speech rules stay.
+ * Google Flow prompt for the shared silent clip (see flow-prompt.js). The LLM only plans the shot list
+ * from the script beats; length and rules come from code. scripts: { th?, my? }
+ * → { style, seconds, shots, prompt, mock }   mock = default shots (no LLM or unusable reply)
  */
-export function buildVideoPromptRequest(product, { style = "product", seconds = 10, script } = {}) {
-  const beats = script
-    ? [`hook: ${script.hook}`, ...(script.lines || []).map((l, i) => `line ${i + 1}: ${l}`), `call to action: ${script.cta}`]
-    : [];
-  return [
-    `You write prompts for AI video tools such as Google Flow (Veo). The user attaches the product photos as reference images.`,
-    `Rewrite the BASE PROMPT below into ONE ready-to-paste prompt for this specific product: a ${seconds}-second vertical 9:16 clip.`,
-    `Make it a concrete shot list with timings (e.g. "0–3s: …"), choosing actions, setting and props that suit this product and how it is really used.`,
-    beats.length ? `A voiceover is added later. Match the shots, in order, to the beats of this script (it may be in Thai or Burmese — read it, do not copy it):\n${beats.map((b) => `- ${b}`).join("\n")}` : "",
-    `Keep every rule of the base prompt: exact product appearance and consistency, no on-screen text, captions or logos, nobody speaks (no lip movement), audio only natural product sounds, no music.`,
-    `Only show features the product details support.`,
-    `Write in English. Return ONLY the prompt text — no title, no markdown, no explanation. At most ${VIDEO_PROMPT_MAX - 200} characters.`,
-    ``,
-    `Product: ${product.title}`,
-    product.description ? `Details: ${String(product.description).slice(0, 1500)}` : "",
-    ``,
-    `BASE PROMPT:`,
-    buildProductPrompt(product, { style }),
-  ].filter((l) => l !== "").join("\n");
-}
-
-/** → { prompt, mock? }  Without an LLM key the house prompt for the style is returned as is. */
-export async function generateVideoPrompt(product, opts = {}) {
-  if (!llmEnabled()) return { prompt: buildProductPrompt(product, { style: opts.style }), mock: true };
-  const text = (await chat(buildVideoPromptRequest(product, opts), 0.7))
-    .replace(/^```\w*\s*|\s*```$/g, "")
-    .trim();
-  if (!text) throw new Error("LLM returned an empty video prompt");
-  return { prompt: text.slice(0, VIDEO_PROMPT_MAX) };
+export async function generateClipPrompt(product, { style = "product", scripts = {} } = {}) {
+  const seconds = clipSeconds(scripts);
+  const script = scripts.my || scripts.th;
+  let shots = null;
+  if (llmEnabled() && script) shots = parseShots(await chat(buildShotRequest(product, { style, seconds, script }), 0.7));
+  return { style, seconds, shots, prompt: buildClipPrompt(product, { style, seconds, shots }), mock: !shots };
 }

@@ -98,8 +98,11 @@ export async function generateVideo(product, imageUrls, { style, resumeId, onId,
     onStatus?.(it.status);
     const video = findVideo(it);
     if (video) return videoBytes(video);
-    if (it.error || FAILED.has(String(it.status).toLowerCase())) {
-      throw new Error(`Gemini video ${it.status || "failed"}: ${it.error?.message || ""}`);
+    // a failed interaction lists its reasons in errors[] (e.g. RESOURCE_EXHAUSTED when Google is out of capacity)
+    const errs = [it.error, ...(Array.isArray(it.errors) ? it.errors : [])].filter(Boolean);
+    if (errs.length || FAILED.has(String(it.status).toLowerCase())) {
+      const why = errs.map((e) => [e.code, e.message].filter(Boolean).join(": ")).join("; ");
+      throw new Error(`Gemini video ${it.status || "failed"}: ${why}`);
     }
     if (it.status === "completed") throw new Error("Gemini video completed but returned no video");
     if (!id) throw new Error("Gemini returned neither a video nor an interaction id");

@@ -5,3 +5,6 @@ dist/
 .work*/
 *.log
 .DS_Store
+
+# test / provider videos stay local (large); the few tracked ones are kept
+samples/*.mp4

@@ -77,3 +77,64 @@ for (const lang of ["th", "my"]) {
     assert.ok(r.duration > 5);
   });
 }
+
+test("uploaded clip → 720x1280 9:16 with an audio track (landscape + silent input)", async () => {
+  const { normalizeClip } = await import("../normalize-clip.js");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { spawnSync } = await import("node:child_process");
+  const dir = mkdtempSync(join(tmpdir(), "avs-norm-"));
+  try {
+    const src = join(dir, "in.mp4");
+    spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=24", "-t", "2.5", "-c:v", "libx264", src]);
+    const out = normalizeClip({ input: src, out: join(dir, "out.mp4") });
+    assert.equal(out.width, 720);
+    assert.equal(out.height, 1280);
+    assert.equal(out.hasAudio, true);
+    assert.ok(Math.abs(out.duration - 2.5) < 0.2, String(out.duration));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scene clip: each scene for its own seconds, long scenes split in two shots, 720x1280", async () => {
+  const { planSceneShots, makeSceneClip } = await import("../scene-clip.js");
+  const { probeClip } = await import("../normalize-clip.js");
+  const shots = planSceneShots([{ seconds: 3 }, { seconds: 5 }, { seconds: 2 }]);
+  assert.deepEqual(shots.map((s) => [s.scene, s.type, s.seconds]), [[0, "zoom", 3], [1, "zoom", 2.5], [1, "pan", 2.5], [2, "zoom", 2]]);
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { spawnSync } = await import("node:child_process");
+  const dir = mkdtempSync(join(tmpdir(), "avs-scene-"));
+  try {
+    const img = join(dir, "s.png");
+    spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=768x1376", "-frames:v", "1", img]);
+    const out = join(dir, "clip.mp4");
+    await makeSceneClip({ scenes: [{ path: img, seconds: 1.5 }, { path: img, seconds: 4 }], out });
+    const info = probeClip(out);
+    assert.equal(info.width, 720);
+    assert.equal(info.height, 1280);
+    assert.ok(Math.abs(info.duration - 5.5) < 0.15, String(info.duration));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("voice provider per language: TTS_PROVIDER_TH / _MY override TTS_PROVIDER", async () => {
+  const { ttsProviderFor, voiceEnabled } = await import("../index.js");
+  const env = { TTS_PROVIDER: "gemini", TTS_PROVIDER_MY: "VoxCPM" };
+  assert.equal(ttsProviderFor("th", env), "gemini");
+  assert.equal(ttsProviderFor("my", env), "voxcpm");
+  assert.equal(ttsProviderFor("th", {}), "edge"); // engine default
+  assert.equal(voiceEnabled(["th", "my"], {}), false); // worker default: no voice
+  assert.equal(voiceEnabled(["th"], { TTS_PROVIDER_MY: "voxcpm" }), false);
+  assert.equal(voiceEnabled(["th", "my"], { TTS_PROVIDER_MY: "voxcpm" }), true);
+});
+
+test("buildConfig: the chosen voice speed goes into the engine config; none → no speeds key", () => {
+  const script = { hook: "h", lines: ["a"], captions: [], cta: "c" };
+  assert.deepEqual(buildConfig({ clipPath: "c.mp4", outPath: "o.mp4", lang: "my", script, speed: 1.2 }).speeds, { my: 1.2 });
+  assert.equal(buildConfig({ clipPath: "c.mp4", outPath: "o.mp4", lang: "my", script }).speeds, undefined);
+});

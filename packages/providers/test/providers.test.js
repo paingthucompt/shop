@@ -132,56 +132,272 @@ test("gemini generateVideo: polls a background interaction, resumes by id, fails
     replies.push({ id: "v1_1", status: "failed", error: { message: "safety" } });
     await assert.rejects(generateVideo({ title: "Fan" }, [], { resumeId: "v1_1", intervalMs: 1 }), /Gemini video failed: safety/);
     assert.deepEqual(calls.map(([m]) => m), ["GET"]);
+
+    // the real API puts reasons in errors[] (seen live: RESOURCE_EXHAUSTED)
+    replies.push({ id: "v1_2", status: "failed", errors: [{ code: "RESOURCE_EXHAUSTED", message: "There was a problem processing your request." }] });
+    await assert.rejects(generateVideo({ title: "Fan" }, [], { resumeId: "v1_2", intervalMs: 1 }), /Gemini video failed: RESOURCE_EXHAUSTED: There was a problem/);
   } finally {
     globalThis.fetch = realFetch;
     delete process.env.GEMINI_API_KEY;
   }
 });
 
-test("video prompt request: keeps the style's house rules, follows the script beats, English only", async () => {
-  const { buildVideoPromptRequest } = await import("../src/llm.js");
-  const script = { hook: "ကြက်သွန်လှီးရတာ ပင်ပန်းလား?", lines: ["ခလုတ်တစ်ချက်နှိပ်ရုံနဲ့ ကြိတ်ပြီးပြီ"], cta: "ခြင်းဝါလေးကို နှိပ်ပါ" };
-  const req = buildVideoPromptRequest({ title: "Seagull Mini Chopper", description: "250 ml" }, { style: "in_action", seconds: 12, script });
-  assert.match(req, /12-second vertical 9:16/);
-  assert.match(req, /hook: ကြက်သွန်/);
-  assert.match(req, /line 1: ခလုတ်/);
-  assert.match(req, /Write in English/);
-  assert.match(req, /BASE PROMPT:\nCreate a photorealistic/);
-  assert.match(req, /Product consistency/);
-  assert.match(req, /no exaggerated or instant transformations/); // in_action style rules included
+const MY_SCRIPT = {
+  hook: "ကြက်သွန်လှီးရတာ လက်စပ်လို့ စိတ်ညစ်နေလား။",
+  lines: ["Seagull mini ကြိတ်စက်လေးနဲ့ တစ်ချက်နှိပ်ရုံပဲ။", "ကြိုးမဲ့မို့ သယ်ရလွယ်ပြီး ဆေးရတာလည်း အဆင်ပြေတယ်။"],
+  cta: "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါ။",
+};
+const TH_SCRIPT = { hook: "สับพริกทีไรแสบมือ", lines: ["กดปุ่มเดียวละเอียด"], cta: "กดตะกร้าเหลืองเลย" };
+
+test("clip prompt: one SILENT clip for all languages, long enough for the longest voiceover, ≤ 15 s", async () => {
+  const { clipSeconds, videoSeconds, buildClipPrompt } = await import("../src/flow-prompt.js");
+  const secs = clipSeconds({ th: TH_SCRIPT, my: MY_SCRIPT });
+  assert.ok(secs >= Math.ceil(videoSeconds(MY_SCRIPT, "my")) && secs <= 15, String(secs));
+  assert.ok(secs > clipSeconds({ th: TH_SCRIPT }), "the longer Burmese read sets the length");
+  assert.equal(clipSeconds({}), 5);
+  const p = buildClipPrompt({ title: "Seagull เครื่องบดสับ 250 มล. Mini Food Chopper" }, { style: "in_action", seconds: secs });
+  assert.match(p, new RegExp(`Vertical 9:16, ${secs} seconds`));
+  assert.match(p, /Nobody speaks: no voice, no narration, no lip movement/);
+  assert.match(p, /No music/);
+  assert.match(p, /No on-screen text/);
+  assert.match(p, /top and bottom fifth of the frame free/);
+  assert.match(p, /never morph, duplicate or redesign it/);
+  assert.match(p, /no exaggerated or instant transformations/); // in_action style
+  assert.doesNotMatch(p, /[\u0E00-\u0E7F\u1000-\u109F]/); // no Thai / Burmese text in the prompt
+  assert.match(p, /Shot list: 0–/);
 });
 
-test("video prompt without an LLM key = the house prompt for the style", async () => {
-  const { generateVideoPrompt } = await import("../src/llm.js");
-  const saved = process.env.LLM_API_KEY;
-  delete process.env.LLM_API_KEY;
-  try {
-    const vp = await generateVideoPrompt({ title: "Fan" }, { style: "hero" });
-    assert.equal(vp.mock, true);
-    assert.equal(vp.prompt, buildProductPrompt({ title: "Fan" }, { style: "hero" }));
-  } finally {
-    if (saved !== undefined) process.env.LLM_API_KEY = saved;
-  }
+test("clip prompt: title without Thai/Burmese; nothing left → generic name", async () => {
+  const { promptTitle } = await import("../src/flow-prompt.js");
+  assert.equal(promptTitle("Seagull เครื่องบดสับอาหารไร้สาย 250 มล. สีครีม Mini Food Chopper"), "Seagull 250. Mini Food Chopper");
+  assert.equal(promptTitle("พัดลมมือถือ"), "the product in the attached photos");
+  assert.equal(promptTitle("RGB Keyboard"), "RGB Keyboard");
 });
 
-test("video prompt with an LLM: strips markdown fences and caps the length", async () => {
-  const { generateVideoPrompt, VIDEO_PROMPT_MAX } = await import("../src/llm.js");
+test("clip prompt: the LLM writes the shot list from the script; bad replies fall back to default shots", async () => {
+  const { generateClipPrompt } = await import("../src/llm.js");
+  const { parseShots } = await import("../src/flow-prompt.js");
+  assert.equal(parseShots('ok {"shots": "0–3s: a"}'), "0–3s: a");
+  assert.equal(parseShots('{"shots": ["0–3s: a", "3–6s: b"]}'), "0–3s: a 3–6s: b");
+  assert.equal(parseShots("no json"), null);
+  const long = Array.from({ length: 40 }, (_, i) => `${i}–${i + 1}s: hand shows detail ${i}.`).join(" ");
+  const cut = parseShots(JSON.stringify({ shots: long }));
+  assert.ok(cut.length <= 900 && cut.endsWith("."));
+
   const realFetch = globalThis.fetch;
   const saved = process.env.LLM_API_KEY;
   process.env.LLM_API_KEY = "k";
+  let reply = '{"shots": "0–4s: hand presses the button. 4–9s: garlic minced."}';
   let sent;
-  globalThis.fetch = async (_url, init) => {
-    sent = JSON.parse(init.body);
-    return new Response(JSON.stringify({ choices: [{ message: { content: "```text\n0–3s: hands open the box. " + "x".repeat(3000) + "\n```" } }] }), { status: 200 });
+  globalThis.fetch = async (_u, init) => {
+    sent = JSON.parse(init.body).messages[0].content;
+    return new Response(JSON.stringify({ choices: [{ message: { content: reply } }] }), { status: 200 });
   };
   try {
-    const vp = await generateVideoPrompt({ title: "Fan" }, { style: "unboxing" });
-    assert.ok(vp.prompt.startsWith("0–3s: hands open the box."));
-    assert.ok(!vp.prompt.includes("```"));
-    assert.equal(vp.prompt.length, VIDEO_PROMPT_MAX);
-    assert.match(sent.messages[0].content, /Rewrite the BASE PROMPT/);
+    const good = await generateClipPrompt({ title: "Chopper" }, { style: "product", scripts: { th: TH_SCRIPT, my: MY_SCRIPT } });
+    assert.equal(good.mock, false);
+    assert.match(good.prompt, /Shot list: 0–4s: hand presses the button/);
+    assert.match(sent, /hook: ကြက်သွန်/); // planned from the script beats
+    assert.match(sent, new RegExp(`${good.seconds}-second`));
+    reply = "sorry";
+    const fb = await generateClipPrompt({ title: "Chopper" }, { scripts: { th: TH_SCRIPT } });
+    assert.equal(fb.mock, true);
+    assert.match(fb.prompt, /the full product clearly visible/);
   } finally {
     globalThis.fetch = realFetch;
     if (saved === undefined) delete process.env.LLM_API_KEY; else process.env.LLM_API_KEY = saved;
+  }
+});
+
+test("LLM chat retries 503 'high demand' and then succeeds; a 401 fails at once", async () => {
+  const { generateClipPrompt } = await import("../src/llm.js");
+  const realFetch = globalThis.fetch;
+  const saved = process.env.LLM_API_KEY;
+  process.env.LLM_API_KEY = "k";
+  const statuses = [503, 200];
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    const status = statuses.shift();
+    return status === 200
+      ? new Response(JSON.stringify({ choices: [{ message: { content: '{"shots": "0–5s: s1"}' } }] }), { status })
+      : new Response("high demand", { status });
+  };
+  try {
+    assert.match((await generateClipPrompt({ title: "Fan" }, { scripts: { th: TH_SCRIPT } })).prompt, /Shot list: 0–5s: s1/);
+    assert.equal(calls, 2);
+    calls = 0;
+    statuses.push(401);
+    await assert.rejects(generateClipPrompt({ title: "Fan" }, { scripts: { th: TH_SCRIPT } }), /LLM 401/);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+    if (saved === undefined) delete process.env.LLM_API_KEY; else process.env.LLM_API_KEY = saved;
+  }
+});
+
+test("llmConfig: own key wins; otherwise the Gemini key, never sent to a leftover OpenAI URL", async () => {
+  const { llmConfig, DEFAULT_GEMINI_TEXT_MODEL } = await import("../src/llm.js");
+  assert.equal(llmConfig({}), null);
+  assert.deepEqual(llmConfig({ LLM_API_KEY: "sk-1" }), { key: "sk-1", baseUrl: "https://api.openai.com/v1", model: "gpt-4.1-mini", fallbacks: [] });
+  const g = llmConfig({ GEMINI_API_KEY: "g", LLM_BASE_URL: "https://api.openai.com/v1", LLM_MODEL: "gpt-4.1-mini" });
+  assert.equal(g.key, "g");
+  assert.match(g.baseUrl, /generativelanguage\.googleapis\.com/);
+  assert.equal(g.model, DEFAULT_GEMINI_TEXT_MODEL);
+  assert.equal(llmConfig({ GEMINI_API_KEY: "g", LLM_MODEL: "gemini-3.8-flash" }).model, "gemini-3.8-flash");
+});
+
+
+test("storyboard prompt: panels = script beats in time order with exact text, shots from the clip, no invented claims", async () => {
+  const { buildStoryboardPrompt, storyboardPanels, parseShotSegments } = await import("../src/flow-prompt.js");
+  const shots = "0–3s: hand drops garlic into the bowl. 3–7s: finger presses the button. 7–11s: close-up of the blade. 11–15s: chopper fully visible.";
+  assert.equal(parseShotSegments(shots).length, 4);
+  const script = { ...TH_SCRIPT, captions: ["ละเอียดในปุ่มเดียว"] };
+  const panels = storyboardPanels(script, "th", { seconds: 15, shots });
+  assert.deepEqual(panels.map((x) => x.role), ["hook", "intro", "cta"]);
+  assert.equal(panels[0].from, 0);
+  assert.equal(panels.at(-1).to, 15);
+  assert.ok(panels.every((x, i) => i === 0 || x.from >= panels[i - 1].from));
+  assert.equal(panels[1].text, "ละเอียดในปุ่มเดียว"); // on-screen caption wins over the spoken line
+  assert.equal(panels[0].visual, "hand drops garlic into the bowl");
+  const th = buildStoryboardPrompt({ title: "Seagull เครื่องบดสับ Mini Chopper", price: 299, currency: "THB" }, "th", { script, seconds: 15, shots });
+  assert.match(th, /landscape 16:9 storyboard sheet for a 15-second vertical \(9:16\)/);
+  assert.match(th, /1\. Label "1\. เปิดเรื่อง \(0–\d+s\)"/);
+  assert.match(th, new RegExp(`On-screen text: "${TH_SCRIPT.cta}" with a yellow button "🛒 สั่งซื้อเลย!" and the price "299 THB"`));
+  assert.match(th, /Seagull เครื่องบดสับ Mini Chopper/); // Thai name kept on the Thai storyboard
+  assert.match(th, /Do not add prices, discounts, warranties/);
+  const my = buildStoryboardPrompt({ title: "Seagull เครื่องบดสับ Mini Chopper" }, "my", { script: MY_SCRIPT, seconds: 15, shots });
+  assert.doesNotMatch(my, /[\u0E00-\u0E7F]/); // no Thai on the Myanmar storyboard
+  assert.doesNotMatch(my, /and the price/); // no price given → none invented
+  assert.match(my, /Write every Burmese \(Myanmar\) text EXACTLY/);
+});
+
+test("scene images: plan = storyboard beats (≤ 6 scenes covering the clip), prompt without text or bands", async () => {
+  const { planScenes, buildScenePrompt, MAX_SCENES } = await import("../src/scene-images.js");
+  const shots = "0–3s: hand drops garlic. 3–7s: finger presses the button. 7–10s: blade close-up. 10–13s: chopper hero.";
+  const plan = planScenes(MY_SCRIPT, "my", { seconds: 13, shots });
+  assert.deepEqual(plan.map((s) => s.role), ["hook", "intro", "feature", "cta"]);
+  assert.equal(plan[0].from, 0);
+  assert.equal(plan.at(-1).to, 13);
+  assert.equal(plan.reduce((a, s) => a + s.seconds, 0), 13);
+  const long = { hook: "h", lines: ["a", "b", "c", "d", "e", "f"], cta: "c" };
+  const merged = planScenes(long, "th", { seconds: 15 });
+  assert.equal(merged.length, MAX_SCENES);
+  assert.equal(merged.reduce((a, s) => a + s.seconds, 0), 15);
+  assert.deepEqual(merged.map((s) => s.n), [1, 2, 3, 4, 5, 6]);
+  const p = buildScenePrompt({ title: "Seagull เครื่องบด Mini Chopper" }, { visual: "chopper hero.", role: "cta" });
+  assert.match(p, /ONE photorealistic vertical 9:16 photo/);
+  assert.match(p, /Never a grid, collage, split screen/);
+  assert.match(p, /show only the most telling one\): chopper hero\.\n/);
+  assert.match(p, /fills the entire frame edge to edge/);
+  assert.match(p, /No text, letters, captions/);
+  assert.match(p, /fully visible, sharp/);
+  assert.doesNotMatch(p, /top and bottom fifth/); // that wording made the model blur the edges
+  assert.doesNotMatch(p, /[฀-๿]/);
+});
+
+test("scene images: request carries ≤ 4 reference photos + 9:16; reply image parsed; blocked reply is an error", async () => {
+  const { buildImageRequest, findImage, generateSceneImage } = await import("../src/scene-images.js");
+  const refs = Array.from({ length: 5 }, () => "data:image/webp;base64,AAAA");
+  const req = buildImageRequest("p", refs, { size: "1K" });
+  assert.equal(req.contents[0].parts.length, 5); // 4 photos + text
+  assert.deepEqual(req.generationConfig, { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "9:16", imageSize: "1K" } });
+  assert.equal(findImage({ candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/jpeg", data: "QQ==" } }] } }] }).mime, "image/jpeg");
+  assert.equal(findImage({}), null);
+
+  const realFetch = globalThis.fetch;
+  process.env.GEMINI_API_KEY = "k";
+  const replies = [
+    [503, "busy"],
+    [200, JSON.stringify({ candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: Buffer.from("png").toString("base64") } }] } }], usageMetadata: { candidatesTokenCount: 1120 } })],
+    [200, JSON.stringify({ candidates: [{ finishReason: "IMAGE_SAFETY", content: { parts: [] } }] })],
+  ];
+  let calls = 0;
+  globalThis.fetch = async (url, init) => {
+    calls++;
+    assert.match(String(url), /models\/gemini-3\.1-flash-image:generateContent$/);
+    assert.equal(init.headers["x-goog-api-key"], "k");
+    const [status, body] = replies.shift();
+    return new Response(body, { status });
+  };
+  try {
+    const img = await generateSceneImage("p", ["data:image/png;base64,AAAA"]);
+    assert.equal(img.data.toString(), "png");
+    assert.equal(img.usage.candidatesTokenCount, 1120);
+    assert.equal(calls, 2); // retried the 503
+    await assert.rejects(generateSceneImage("p", ["data:image/png;base64,AAAA"]), /no image returned \(IMAGE_SAFETY\)/);
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.GEMINI_API_KEY;
+  }
+});
+
+test("storyboard → video prompt: same panels and timings as the storyboard, silent, never shows its text", async () => {
+  const { buildStoryboardVideoPrompt, buildStoryboardPrompt } = await import("../src/flow-prompt.js");
+  const shots = "0–3s: hand drops garlic. 3–7s: finger presses the button. 7–10s: blade close-up. 10–13s: chopper hero.";
+  const opts = { script: MY_SCRIPT, seconds: 13, shots, style: "product" };
+  const board = buildStoryboardPrompt({ title: "Seagull เครื่องบด Mini Chopper" }, "my", opts);
+  const video = buildStoryboardVideoPrompt({ title: "Seagull เครื่องบด Mini Chopper" }, "my", opts);
+  const times = (t) => [...t.matchAll(/\((\d+)–(\d+)s\)/g)].map((m) => m[0]);
+  assert.deepEqual(times(video), times(board)); // panel timings match the storyboard
+  assert.match(video, /Vertical 9:16, 13 seconds/);
+  assert.match(video, /Follow the attached STORYBOARD image: it has \d+ numbered panels/);
+  assert.match(video, /Nobody speaks/);
+  assert.match(video, /show NO text, subtitles, captions, buttons/);
+  assert.match(video, /never the storyboard layout itself/);
+  assert.doesNotMatch(video, /[฀-๿က-႟]/); // English only — no Thai/Myanmar text for Flow to copy
+});
+
+test("LLM: a busy (503) or hanging main model falls over to the next fallback model", async () => {
+  const { generateClipPrompt } = await import("../src/llm.js");
+  const realFetch = globalThis.fetch;
+  const saved = { k: process.env.LLM_API_KEY, f: process.env.LLM_FALLBACK_MODELS, m: process.env.LLM_MODEL };
+  process.env.LLM_API_KEY = "k"; process.env.LLM_MODEL = "main"; process.env.LLM_FALLBACK_MODELS = "backup-a, backup-b";
+  const used = [];
+  globalThis.fetch = async (_u, init) => {
+    const { model } = JSON.parse(init.body);
+    used.push(model);
+    return model === "backup-a"
+      ? new Response(JSON.stringify({ choices: [{ message: { content: '{"shots": "0–5s: ok"}' } }] }), { status: 200 })
+      : new Response("high demand", { status: 503 });
+  };
+  try {
+    const r = await generateClipPrompt({ title: "Fan" }, { scripts: { th: TH_SCRIPT } });
+    assert.match(r.prompt, /Shot list: 0–5s: ok/);
+    assert.deepEqual(used, ["main", "backup-a"]);
+  } finally {
+    globalThis.fetch = realFetch;
+    for (const [k, v] of [["LLM_API_KEY", saved.k], ["LLM_FALLBACK_MODELS", saved.f], ["LLM_MODEL", saved.m]]) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+});
+
+test("generateScript: a Burmese reply with Thai letters is sent back with the broken words named", async () => {
+  const { generateScript, foreignWords } = await import("../src/llm.js");
+  const realFetch = globalThis.fetch;
+  process.env.LLM_API_KEY = "k";
+  process.env.LLM_BASE_URL = "https://llm.example/v1";
+  const mixed = { hook: "အဆင်ပြေမယ့် တู้เย็นလေး", lines: ["Haier ၁၄၉ လิตร ဆိုဒ်လေး"], captions: ["၁၄၉ လီတာ"], cta: "ခြင်းဝါလေးကို နှိပ်ပါ" };
+  const good = { hook: "အဆင်ပြေမယ့် ရေခဲသေတ္တာလေး", lines: ["Haier ၁၄၉ လီတာ ဆိုဒ်လေး"], captions: ["၁၄၉ လီတာ"], cta: "ခြင်းဝါလေးကို နှိပ်ပါ" };
+  const prompts = [];
+  const replies = [mixed, good];
+  globalThis.fetch = async (_url, init) => {
+    prompts.push(JSON.parse(init.body).messages[0].content);
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(replies.shift()) } }] }), { status: 200 });
+  };
+  try {
+    assert.deepEqual(foreignWords(mixed, "my"), ["တู้เย็นလေး", "လิตร"]);
+    const s = await generateScript({ title: "[BCD]Haier ตู้เย็น 149 ลิตร" }, "my");
+    assert.equal(s.hook, good.hook);
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[1], /mixed in letters of another language in: "တู้เย็นလေး", "လิตร"/);
+
+    replies.push(mixed, mixed, mixed); // never fixed → clear error, nothing saved
+    await assert.rejects(generateScript({ title: "x" }, "my"), /kept mixing other-language letters/);
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.LLM_API_KEY;
+    delete process.env.LLM_BASE_URL;
   }
 });

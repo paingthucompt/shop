@@ -2,11 +2,12 @@ import { Router } from "express";
 import multer from "multer";
 import rateLimit from "express-rate-limit";
 import { mkdirSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import crypto from "node:crypto";
-import { query } from "@app/db";
-import { llm, shopee, seedance } from "@app/providers";
+import { query, tx, changeCredits } from "@app/db";
+import { llm, shopee, seedance, flowPrompt, sceneImages, productLink } from "@app/providers";
+import { probeClip } from "@app/video-engine";
 import { ah, requireAuth, STORAGE_DIR, mediaUrl } from "../lib.js";
 import { httpError, parseId, parseLangs, parseAngle, parseStyle, isShopeeUrl } from "../validate.js";
 import { validateScript, clampScript } from "../script-rules.js";
@@ -29,6 +30,22 @@ const upload = multer({
   fileFilter: (_req, f, cb) => (IMG_EXT[f.mimetype] ? cb(null, true) : cb(httpError(400, "only jpg/png/webp images"))),
 });
 
+// the user's own product clip (e.g. downloaded from Google Flow); the worker normalises it to 9:16
+const VIDEO_EXT = { "video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm" };
+const CLIP_MAX_MB = 200;
+const clipUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, _f, cb) => {
+      const dir = join(STORAGE_DIR, "uploads", String(req.userId));
+      mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (_req, f, cb) => cb(null, `clip-${crypto.randomUUID()}${VIDEO_EXT[f.mimetype]}`),
+  }),
+  limits: { fileSize: CLIP_MAX_MB * 1024 * 1024, files: 1 },
+  fileFilter: (_req, f, cb) => (VIDEO_EXT[f.mimetype] ? cb(null, true) : cb(httpError(400, "only MP4, MOV or WebM videos"))),
+});
+
 // AI script writing costs the platform money but no credits → cap it per user
 const aiLimiter = rateLimit({
   windowMs: 60 * 60_000,
@@ -41,8 +58,39 @@ const aiLimiter = rateLimit({
 
 const CURRENCIES = ["THB", "MMK", "USD"];
 
+// link import downloads photos from the shops' CDNs → cap it per user
+const importLimiter = rateLimit({
+  windowMs: 60 * 60_000,
+  limit: Number(process.env.LINK_IMPORT_PER_HOUR || 60),
+  keyGenerator: (req) => `user:${req.userId}`,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "too many link imports — try again in a while" },
+});
+
+/** bookmarklet data from the user's browser: only plain strings / numbers, bounded sizes */
+function parseImportPage(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const str = (x, max) => (typeof x === "string" ? x.slice(0, max) : "");
+  return {
+    url: str(v.url, 2000),
+    title: str(v.title, 300),
+    description: str(v.description, 3000),
+    price: typeof v.price === "number" || typeof v.price === "string" ? String(v.price).replace(/[^\d.]/g, "").slice(0, 20) : "",
+    currency: str(v.currency, 5).toUpperCase(),
+    images: Array.isArray(v.images) ? v.images.filter((u) => typeof u === "string").slice(0, 30).map((u) => u.slice(0, 2000)) : [],
+  };
+}
+
 // public shape: signed URLs only — never absolute server paths
-const present = (p) => ({ ...p, images: (p.images || []).map((i) => ({ url: mediaUrl(i.path), mime: i.mime })) });
+const present = ({ clip_path: clipPath, clip_seconds: clipSecs, ...p }) => ({
+  ...p,
+  images: (p.images || []).map((i) => ({ url: mediaUrl(i.path), mime: i.mime })),
+  clip: clipPath ? { url: mediaUrl(clipPath), seconds: Number(clipSecs) } : null,
+  scenes: Array.isArray(p.scenes)
+    ? p.scenes.map(({ path, prompt, mime, ...s }) => ({ ...s, url: path ? mediaUrl(path) : null }))
+    : null,
+});
 
 const removeUploads = (files = []) => Promise.all(files.map((f) => rm(f.path, { force: true })));
 
@@ -83,7 +131,22 @@ r.get("/", ah(async (req, res) => {
   res.json(rows.map(present));
 }));
 
-/** multipart: title, description, price, currency, product_url, affiliate_url, images[] (1–4) */
+/**
+ * POST /api/products/import  { url } and/or { page } (from the bookmarklet) → product fields + photos as
+ * data URLs for the "Add product" form. Nothing is saved yet: the user checks it and presses Save.
+ */
+r.post("/import", importLimiter, ah(async (req, res) => {
+  const url = typeof req.body.url === "string" ? req.body.url.trim().slice(0, 4000) : "";
+  const page = parseImportPage(req.body.page);
+  if (!url && !page) throw httpError(400, "paste a TikTok Shop or Shopee product link");
+  const r2 = await productLink.importProduct({ url: url || undefined, page }, { shopee });
+  res.json({
+    ...r2,
+    images: r2.images.map((i) => ({ src: `data:${i.mime};base64,${i.data.toString("base64")}`, mime: i.mime })),
+  });
+}));
+
+/** multipart: title, description, price, currency, product_url, affiliate_url, source, images[] (1–4) */
 r.post("/", upload.array("images", 4), ah(async (req, res) => {
   const form = parseProductForm(req.body);
   if (form.error || !req.files?.length) {
@@ -99,8 +162,9 @@ r.post("/", upload.array("images", 4), ah(async (req, res) => {
   try {
     const { rows } = await query(
       `INSERT INTO products (user_id, source, title, description, price, currency, product_url, affiliate_url, images)
-       VALUES ($1,'manual',$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [req.userId, p.title, p.description, p.price, p.currency, p.productUrl, affiliateUrl, JSON.stringify(images)],
+       VALUES ($1,$9,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [req.userId, p.title, p.description, p.price, p.currency, p.productUrl, affiliateUrl, JSON.stringify(images),
+        ["tiktok", "shopee"].includes(req.body.source) ? req.body.source : "manual"],
     );
     res.status(201).json(present(rows[0]));
   } catch (e) {
@@ -112,7 +176,8 @@ r.post("/", upload.array("images", 4), ah(async (req, res) => {
 r.get("/:id", ah(async (req, res) => {
   const p = await ownProduct(req.userId, req.params.id);
   const { rows: scripts } = await query("SELECT lang, hook, lines, captions, cta, angle, updated_at FROM scripts WHERE product_id = $1", [p.id]);
-  res.json({ ...present(p), scripts: Object.fromEntries(scripts.map((s) => [s.lang, s])) });
+  const byLang = Object.fromEntries(scripts.map((s) => [s.lang, s]));
+  res.json({ ...present(p), scripts: byLang, flow_prompts: flowPromptsOf(p, p.clip_prompt, byLang), features: { scene_images: scenesOn(), ai_video: seedance.aiVideoProvider() } });
 }));
 
 const MAX_IMAGES = 4;
@@ -168,6 +233,8 @@ r.delete("/:id", ah(async (req, res) => {
   // files are not in the DB cascade: remove uploads and rendered videos (best effort)
   await Promise.allSettled([
     ...(p.images || []).map((i) => removeStored(i.path)),
+    ...(p.clip_path ? [removeStored(p.clip_path)] : []),
+    removeStored(join(STORAGE_DIR, "scenes", String(p.id))),
     ...jobs.map((j) => removeStored(join(STORAGE_DIR, "jobs", String(j.id)))),
   ]);
   res.status(204).end();
@@ -182,10 +249,39 @@ const saveScript = (productId, lang, s, angle = null) => query(
   [productId, lang, s.hook, JSON.stringify(s.lines), JSON.stringify(s.captions || []), s.cta, angle],
 ).then((r) => r.rows[0]);
 
+const saveClipPrompt = (productId, cp) => query(
+  "UPDATE products SET clip_prompt = $2 WHERE id = $1 RETURNING clip_prompt", [productId, JSON.stringify(cp)],
+).then((r) => r.rows[0]?.clip_prompt ?? null);
+
+const scriptsOf = (productId) => query("SELECT lang, hook, lines, captions, cta FROM scripts WHERE product_id = $1", [productId])
+  .then((r) => Object.fromEntries(r.rows.map((s) => [s.lang, s])));
+
 /**
- * AI-write separate scripts + a video prompt for tools the user runs themselves (Google Flow …).
+ * The Google Flow prompts per language — derived from the scripts + clip prompt, never stored:
+ *   storyboard = Flow Image prompt for the storyboard sheet
+ *   video      = Flow Video prompt that turns that storyboard (+ product photos) into the silent clip
+ * → { th: { storyboard, video, seconds }, my: … } | null
+ */
+function flowPromptsOf(p, clipPrompt, scripts) {
+  if (!clipPrompt) return null;
+  const { seconds, shots, style } = clipPrompt;
+  return Object.fromEntries(Object.entries(scripts)
+    .filter(([lang]) => ["th", "my"].includes(lang))
+    .map(([lang, script]) => [lang, {
+      seconds,
+      storyboard: flowPrompt.buildStoryboardPrompt(p, lang, { script, seconds, shots, style }),
+      video: flowPrompt.buildStoryboardVideoPrompt(p, lang, { script, seconds, shots, style }),
+    }]));
+}
+
+// AI scene images cost ~US$0.07 each → off unless SCENE_IMAGES=on (Flow makes the pictures for free)
+const scenesOn = () => /^(on|1|true|yes)$/i.test(process.env.SCENE_IMAGES || "") && sceneImages.sceneImagesEnabled();
+
+/**
+ * AI-write one script per language (in parallel), then ONE Google Flow prompt for the silent product
+ * clip both languages share (its shots follow the script). A failing prompt never loses the scripts.
  * body: { langs: ["th","my"], angle?: "auto"|"problem_solution"|…, style?: one of CLIP_STYLES }
- * → { scripts: { th, my }, video_prompt: { video_prompt, video_prompt_style, mock } | null }
+ * → { scripts: { th, my }, clip_prompt: { style, seconds, shots, prompt, mock } }
  */
 r.post("/:id/scripts/generate", aiLimiter, ah(async (req, res) => {
   const p = await ownProduct(req.userId, req.params.id);
@@ -193,34 +289,170 @@ r.post("/:id/scripts/generate", aiLimiter, ah(async (req, res) => {
   const angle = parseAngle(req.body.angle);
   const style = parseStyle(req.body.style);
   const seconds = seedance.clipSettings().duration;
-  const scripts = {};
-  for (const lang of langs) {
+  const entries = await Promise.all(langs.map(async (lang) => {
     const s = await llm.generateScript(p, lang, { seconds, angle });
-    scripts[lang] = { ...(await saveScript(p.id, lang, clampScript(s), angle)), mock: !!s.mock };
-  }
-  // the scripts are already saved: a failing video prompt must not lose them
-  let videoPrompt = null;
+    return [lang, { ...(await saveScript(p.id, lang, clampScript(s), angle)), mock: !!s.mock }];
+  }));
+  const scripts = await scriptsOf(p.id); // all languages, so the clip is long enough for each voiceover
+  let cp;
   try {
-    const vp = await llm.generateVideoPrompt(p, { style, seconds, script: scripts[langs[0]] });
-    const { rows } = await query(
-      "UPDATE products SET video_prompt = $2, video_prompt_style = $3 WHERE id = $1 RETURNING video_prompt, video_prompt_style",
-      [p.id, vp.prompt, style],
-    );
-    videoPrompt = { ...rows[0], mock: !!vp.mock };
+    cp = await llm.generateClipPrompt(p, { style, scripts });
   } catch (err) {
-    console.warn(`video prompt for product ${p.id} failed: ${err.message}`);
+    console.warn(`clip prompt for product ${p.id} failed: ${err.message}`);
+    const secs = flowPrompt.clipSeconds(scripts);
+    cp = { style, seconds: secs, shots: null, mock: true, prompt: flowPrompt.buildClipPrompt(p, { style, seconds: secs }) };
   }
-  res.json({ scripts, video_prompt: videoPrompt });
+  const clipPrompt = await saveClipPrompt(p.id, cp);
+  res.json({ scripts: Object.fromEntries(entries), clip_prompt: clipPrompt, flow_prompts: flowPromptsOf(p, clipPrompt, scripts) });
 }));
 
-/** user edits a script. body: { hook, lines: [], captions?: [] (on-screen text per line), cta } */
+/** user edits a script. body: { hook, lines: [], captions?: [] (on-screen text per line), cta } → script + clip_prompt */
 r.put("/:id/scripts/:lang", ah(async (req, res) => {
   const p = await ownProduct(req.userId, req.params.id);
   const { lang } = req.params;
   if (!["th", "my"].includes(lang)) return res.status(400).json({ error: "lang must be th or my" });
   const { script, error } = validateScript(req.body, lang);
   if (error) return res.status(400).json({ error });
-  res.json(await saveScript(p.id, lang, script));
+  const saved = await saveScript(p.id, lang, script);
+  // a longer / shorter voiceover changes the clip length the Flow prompt asks for (shots are kept)
+  let clipPrompt = p.clip_prompt;
+  const all = await scriptsOf(p.id);
+  if (clipPrompt) {
+    const seconds = flowPrompt.clipSeconds(all);
+    if (seconds !== clipPrompt.seconds) {
+      const { style = "product", shots = null } = clipPrompt;
+      clipPrompt = await saveClipPrompt(p.id, { ...clipPrompt, seconds, prompt: flowPrompt.buildClipPrompt(p, { style, seconds, shots }) });
+    }
+  }
+  res.json({ ...saved, clip_prompt: clipPrompt, flow_prompts: flowPromptsOf(p, clipPrompt, all) });
+}));
+
+/** upload the product clip (multipart field "clip"): MP4 / MOV / WebM, 2–60 s, ≤ 200 MB */
+r.post("/:id/clip", clipUpload.single("clip"), ah(async (req, res) => {
+  const file = req.file;
+  try {
+    if (!file) throw httpError(400, "choose a video file");
+    const p = await ownProduct(req.userId, req.params.id);
+    if (await hasActiveJob(p.id)) throw httpError(409, BUSY);
+    let info;
+    try { info = probeClip(file.path); } catch { throw httpError(400, "this file is not a playable video"); }
+    if (info.duration < 2 || info.duration > 60) throw httpError(400, `the clip must be 2–60 seconds (this one is ${info.duration.toFixed(1)} s)`);
+    const { rows } = await query(
+      "UPDATE products SET clip_path = $2, clip_seconds = $3 WHERE id = $1 RETURNING *", [p.id, file.path, info.duration.toFixed(2)],
+    );
+    if (p.clip_path) await removeStored(p.clip_path);
+    res.status(201).json(present(rows[0]));
+  } catch (err) {
+    if (file) await rm(file.path, { force: true });
+    throw err;
+  }
+}));
+
+r.delete("/:id/clip", ah(async (req, res) => {
+  const p = await ownProduct(req.userId, req.params.id);
+  if (await hasActiveJob(p.id)) return res.status(409).json({ error: BUSY });
+  const { rows } = await query("UPDATE products SET clip_path = NULL, clip_seconds = NULL WHERE id = $1 RETURNING *", [p.id]);
+  if (p.clip_path) await removeStored(p.clip_path);
+  res.json(present(rows[0]));
+}));
+
+// ---------------------------------------------------------------- AI scene images
+// One Gemini image per script beat (≈ US$0.07 each), charged up front in credits and refunded per
+// failed image. The images are animated into the clip by the worker (clip_source "scenes").
+const SCENE_COST = () => Number(process.env.SCENE_CREDIT_COST || 1);
+const sceneLocks = new Set(); // one generation at a time per product (double clicks cost real money)
+
+const toDataUrl = (img) => readFile(img.path).then((b) => `data:${img.mime || "image/jpeg"};base64,${b.toString("base64")}`);
+const IMG_EXT_OF = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp" };
+
+async function makeScene(p, refs, scene) {
+  const prompt = sceneImages.buildScenePrompt(p, { style: p.clip_prompt?.style, visual: scene.visual, role: scene.role });
+  const img = await sceneImages.generateSceneImage(prompt, refs);
+  const dir = join(STORAGE_DIR, "scenes", String(p.id));
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `scene-${scene.n}-${crypto.randomUUID()}${IMG_EXT_OF[img.mime] || ".png"}`);
+  await writeFile(path, img.data);
+  return { ...scene, prompt, path, mime: img.mime };
+}
+
+/** run fn over items, at most `limit` at a time; never rejects → [{ ok, value | error }] */
+async function settleLimited(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      try { out[i] = { ok: true, value: await fn(items[i]) }; } catch (error) { out[i] = { ok: false, error }; }
+    }
+  }));
+  return out;
+}
+
+// changeCredits throws 402 "Not enough credits" when the balance is too low
+const chargeScenes = (userId, productId, count) =>
+  tx((c) => changeCredits(c, userId, -count * SCENE_COST(), "scenes", `product:${productId}`));
+const refundScenes = (userId, productId, count) => count > 0
+  ? tx((c) => changeCredits(c, userId, count * SCENE_COST(), "refund", `scenes:product:${productId}`)) : null;
+
+async function withSceneLock(productId, fn) {
+  if (sceneLocks.has(productId)) throw httpError(409, "scene images are already being made for this product");
+  sceneLocks.add(productId);
+  try { return await fn(); } finally { sceneLocks.delete(productId); }
+}
+
+/** make all scene images from the scripts + Flow shot list. → product */
+r.post("/:id/scenes", aiLimiter, ah(async (req, res) => {
+  const p = await ownProduct(req.userId, req.params.id);
+  if (!scenesOn()) throw httpError(403, "AI scene images are turned off (SCENE_IMAGES=on to enable) — make the storyboard in Google Flow instead");
+  if (await hasActiveJob(p.id)) throw httpError(409, BUSY);
+  const scripts = await scriptsOf(p.id);
+  const lang = ["my", "th"].find((l) => scripts[l]);
+  if (!lang || !p.clip_prompt) throw httpError(400, "write the scripts first (AI write scripts)");
+  if (!p.images?.length) throw httpError(400, "add product photos first");
+  const plan = sceneImages.planScenes(scripts[lang], lang, { seconds: p.clip_prompt.seconds, shots: p.clip_prompt.shots });
+  const result = await withSceneLock(p.id, async () => {
+    await chargeScenes(req.userId, p.id, plan.length);
+    const refs = await Promise.all(p.images.slice(0, 4).map(toDataUrl));
+    const made = await settleLimited(plan, 3, (scene) => makeScene(p, refs, scene));
+    const failed = made.filter((m) => !m.ok);
+    await refundScenes(req.userId, p.id, failed.length);
+    failed.forEach((m) => console.warn(`scene image for product ${p.id} failed: ${m.error.message}`));
+    // keep the plan complete: failed scenes stay without an image and can be redone one by one
+    const scenes = plan.map((s, i) => (made[i].ok ? made[i].value : { ...s, path: null }));
+    const old = Array.isArray(p.scenes) ? p.scenes.map((s) => s.path).filter(Boolean) : [];
+    const { rows } = await query("UPDATE products SET scenes = $2 WHERE id = $1 RETURNING *", [p.id, JSON.stringify(scenes)]);
+    await Promise.allSettled(old.map(removeStored));
+    return { product: rows[0], failed: failed.length };
+  });
+  res.status(201).json({ ...present(result.product), scenes_failed: result.failed });
+}));
+
+/** remake one scene image (1 scene's credits). → product */
+r.post("/:id/scenes/:n", aiLimiter, ah(async (req, res) => {
+  const p = await ownProduct(req.userId, req.params.id);
+  if (await hasActiveJob(p.id)) throw httpError(409, BUSY);
+  if (!scenesOn()) throw httpError(403, "AI scene images are turned off (SCENE_IMAGES=on to enable)");
+  const n = parseId(req.params.n, "scene");
+  const scene = (p.scenes || []).find((s) => s.n === n);
+  if (!scene) throw httpError(404, "scene not found");
+  const updated = await withSceneLock(p.id, async () => {
+    await chargeScenes(req.userId, p.id, 1);
+    let made;
+    try {
+      made = await makeScene(p, await Promise.all(p.images.slice(0, 4).map(toDataUrl)), scene);
+    } catch (err) {
+      await refundScenes(req.userId, p.id, 1);
+      throw httpError(502, `the scene image could not be made — your credit was refunded (${err.message.slice(0, 120)})`);
+    }
+    const { rows } = await query(
+      `UPDATE products SET scenes = (SELECT jsonb_agg(CASE WHEN (e->>'n')::int = $2 THEN $3::jsonb ELSE e END ORDER BY ord)
+         FROM jsonb_array_elements(scenes) WITH ORDINALITY AS t(e, ord)) WHERE id = $1 RETURNING *`,
+      [p.id, n, JSON.stringify(made)],
+    );
+    if (scene.path) await removeStored(scene.path);
+    return rows[0];
+  });
+  res.json(present(updated));
 }));
 
 export default r;
