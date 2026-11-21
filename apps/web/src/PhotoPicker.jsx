@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PHOTO_TYPES, pickPhotos, useFileDrop } from "./useFileDrop.js";
+import { t } from "./i18n.js";
 
 export const MAX_PHOTOS = 4;
 
@@ -27,18 +28,19 @@ export default function PhotoPicker({ files, onChange, max = MAX_PHOTOS }) {
         {files.map((f, i) => (
           <div key={`${f.name}-${i}`} className="photo">
             <img src={previews[i]} alt="" />
-            <button type="button" className="remove" title="Remove" onClick={() => { setNotice(""); onChange(files.filter((_, j) => j !== i)); }}>✕</button>
+            {i === 0 && <span className="photo-tag">{t("photos.main")}</span>}
+            <button type="button" className="remove" title={t("photos.remove")} aria-label={t("photos.remove")} onClick={() => { setNotice(""); onChange(files.filter((_, j) => j !== i)); }}>✕</button>
           </div>
         ))}
         {files.length < max && (
           <button type="button" className="photo add" onClick={() => input.current?.click()}>
             <span>＋</span>
-            <small>Add photo ({files.length}/{max})</small>
+            <small>{t("photos.add", { n: files.length, max })}</small>
           </button>
         )}
       </div>
-      <p className="drop-hint">{dragging ? "Drop the photos here" : "or drag & drop photos here · paste a copied image with ⌘V / Ctrl+V"}</p>
-      {notice && <p className="error small-text">{notice}</p>}
+      <p className="drop-hint">{dragging ? t("photos.drop") : t("photos.dropHint")}</p>
+      {notice && <p className="alert bad small">{notice}</p>}
       <input
         ref={input} type="file" accept={PHOTO_TYPES.join(",")} multiple hidden
         onChange={(e) => { addFiles([...e.target.files]); e.target.value = ""; /* allow picking the same file again */ }}

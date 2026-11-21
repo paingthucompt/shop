@@ -271,6 +271,7 @@ function flowPromptsOf(p, clipPrompt, scripts) {
       seconds,
       storyboard: flowPrompt.buildStoryboardPrompt(p, lang, { script, seconds, shots, style }),
       video: flowPrompt.buildStoryboardVideoPrompt(p, lang, { script, seconds, shots, style }),
+      video_talking: flowPrompt.buildStoryboardVideoPrompt(p, lang, { script, seconds, shots, style, speaking: true }),
     }]));
 }
 
@@ -290,7 +291,11 @@ r.post("/:id/scripts/generate", aiLimiter, ah(async (req, res) => {
   const style = parseStyle(req.body.style);
   const seconds = seedance.clipSettings().duration;
   const entries = await Promise.all(langs.map(async (lang) => {
-    const s = await llm.generateScript(p, lang, { seconds, angle });
+    const s = await llm.generateScript(p, lang, { seconds, angle }).catch((e) => {
+      if (e.status) throw e; // a script problem the user can act on
+      console.error(`[scripts] ${lang}: ${e.message}`);
+      throw Object.assign(httpError(503, "the AI writer is busy or unreachable — try again in a minute"), { expose: true });
+    });
     return [lang, { ...(await saveScript(p.id, lang, clampScript(s), angle)), mock: !!s.mock }];
   }));
   const scripts = await scriptsOf(p.id); // all languages, so the clip is long enough for each voiceover

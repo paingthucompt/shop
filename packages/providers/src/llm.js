@@ -40,7 +40,7 @@ export function buildScriptPrompt(product, lang, seconds = 10, angle = "auto") {
     ``,
     `Rules:`,
     `- Only claim what the product details support. No medical claims, no "best in the world", no fake discounts.`,
-    `- The product name / details may be in another language (e.g. Thai): never copy any of its letters, not even single vowels or tone marks — translate the meaning into ${LANG_NAME[lang]} (e.g. a "ตู้เย็น" is a fridge, "ลิตร" is litres). Brand names and model numbers in Latin letters and digits are fine.`,
+    `- The product name / details may be in another language (e.g. Thai): never copy any of its letters, not even single vowels or tone marks — translate the meaning into ${LANG_NAME[lang]} (e.g. "fridge", "litres" written in ${LANG_NAME[lang]} letters). Brand names and model numbers in Latin letters and digits are fine.`,
     `- hook: max 8 words, stops the scroll (problem, surprise or result). It is SPOKEN first, at 0 seconds, and counts toward the time limit — lead with the benefit, never "hello everyone".`,
     `- lines: ${maxLines - 1}–${maxLines} short sentences describing what the viewer sees and why it is good.`,
     `- captions: one on-screen key phrase per line (2–5 words, max 30 characters), same order as lines. It is NOT the spoken sentence — it is the selling point at a glance for muted viewers (e.g. a spec, a benefit, a number).`,
@@ -171,12 +171,48 @@ export function foreignWords(script, lang) {
   return [...new Set(text.split(/\s+/).filter((w) => others.some((re) => re.test(w))))];
 }
 
+/** true when the product name / details contain letters of a script language other than `lang` */
+export const hasForeignText = (product, lang) => {
+  const text = `${product.title || ""} ${product.description || ""}`;
+  return Object.entries(SCRIPT_RE).some(([l, re]) => l !== lang && re.test(text));
+};
+
+/**
+ * Product name + details in plain English, for writing a script in another language: a small model
+ * copies Thai letters from a Thai title into Burmese words, but it cannot copy what it never sees.
+ * Falls back to the original product when the translation fails.
+ */
+export async function englishProduct(product) {
+  const reply = await chat([
+    `Translate this e-commerce product name and details into plain, short English. Keep brand names, model numbers, sizes and numbers exactly. Do not add anything.`,
+    `Name: ${product.title}`,
+    product.description ? `Details: ${String(product.description).slice(0, 1500)}` : "",
+    `Return ONLY JSON: {"title": "...", "description": "..."}`,
+  ].filter(Boolean).join("\n"), 0.2);
+  const m = reply.match(/\{[\s\S]*\}/);
+  const j = m ? JSON.parse(m[0]) : null;
+  if (!j || typeof j.title !== "string" || !j.title.trim()) throw new Error("no translation");
+  const clean = (x) => Object.values(SCRIPT_RE).some((re) => re.test(x)) ? "" : String(x || "").trim();
+  if (!clean(j.title)) throw new Error("translation still in Thai / Burmese");
+  return { ...product, title: clean(j.title), description: clean(j.description) || null };
+}
+
+/** a script problem the user can act on (shown as is, not as "server error") */
+export class ScriptError extends Error {
+  constructor(message) { super(message); this.name = "ScriptError"; this.status = 422; }
+}
+
 export async function generateScript(product, lang, { seconds = 10, angle = "auto" } = {}) {
   if (!LANG_NAME[lang]) throw new Error(`unsupported lang ${lang}`);
   if (!llmEnabled()) return { ...MOCK[lang](product), mock: true };
-  // small models copy letters from a product title in the other language (a Thai title → Thai vowels
-  // inside Burmese words). Check every reply and ask again, naming the broken words.
-  const prompt = buildScriptPrompt(product, lang, seconds, angle);
+  // a name / details in the other language (e.g. a Thai title for a Burmese script) → English first
+  let source = product;
+  if (hasForeignText(product, lang)) {
+    try { source = await englishProduct(product); } catch (e) { console.warn(`[llm] product translation failed (${e.message}) — using the original text`); }
+  }
+  // small models still sometimes copy letters of the other language: check every reply and ask
+  // again, naming the broken words.
+  const prompt = buildScriptPrompt(source, lang, seconds, angle);
   let script, bad = [];
   for (let attempt = 1; attempt <= 3; attempt++) {
     const fix = bad.length
@@ -188,7 +224,7 @@ export async function generateScript(product, lang, { seconds = 10, angle = "aut
     if (!bad.length) return script;
     console.warn(`[llm] ${lang} script has foreign letters (${bad.join(" ")}) — asking again (${attempt}/3)`);
   }
-  throw new Error(`the AI kept mixing other-language letters into the ${lang === "my" ? "Burmese" : "Thai"} script (${bad.join(" ")}) — try again or edit it by hand`);
+  throw new ScriptError(`the AI kept mixing other-language letters into the ${lang === "my" ? "Burmese" : "Thai"} script (${bad.join(" ")}) — press “Write again”, or write the product name in English`);
 }
 
 /**

@@ -116,7 +116,7 @@ r.get("/quote", ah(async (req, res) => {
 
 /**
  * body: { product_id, langs: ["th","my"], style: one of CLIP_STYLES, clip_source?: "auto"|"upload",
- *         voice_speed?: { th: 1.1, my: 1.2 }, confirm_cost }
+ *         voice_speed?: { th: 1.1, my: 1.2 }, clip_has_voice?: boolean (upload only), confirm_cost }
  * confirm_cost must equal the quoted cost — the user explicitly agreed to this price.
  * Credits are charged up front and refunded on failure.
  */
@@ -126,19 +126,23 @@ r.post("/", ah(async (req, res) => {
   const style = parseStyle(req.body.style);
   const clipSource = parseClipSource(req.body.clip_source);
   const voiceSpeed = parseVoiceSpeed(req.body.voice_speed, langs);
+  const clipHasVoice = req.body.clip_has_voice === true;
   const q = await buildQuote(req.userId, productId, langs, style, clipSource);
   if (q.error) return res.status(q.status).json({ error: q.error });
   if (q.missing_scripts.length) return res.status(400).json({ error: `write the script first for: ${q.missing_scripts.join(", ")}` });
   const issues = Object.values(q.script_issues);
   if (issues.length) return res.status(400).json({ error: issues.join("; ") });
+  if (clipHasVoice && q.clip_source !== "upload") return res.status(400).json({ error: "\"the clip already has the voice\" only applies to an uploaded clip" });
+  // a talking clip speaks ONE language — making a second language from it would put the wrong voice in it
+  if (clipHasVoice && langs.length !== 1) return res.status(400).json({ error: "a clip with a voice speaks one language — choose only that language" });
   if (Number(req.body.confirm_cost) !== q.cost) {
     return res.status(409).json({ error: "the price changed or was not confirmed — review the quote again", quote: q });
   }
 
   const job = await tx(async (c) => {
     const { rows } = await c.query(
-      "INSERT INTO video_jobs (user_id, product_id, langs, credits_charged, style, clip_source, voice_speed) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *",
-      [req.userId, productId, langs, q.cost, style, q.clip_source, voiceSpeed && JSON.stringify(voiceSpeed)], // the source the user was quoted for
+      "INSERT INTO video_jobs (user_id, product_id, langs, credits_charged, style, clip_source, voice_speed, clip_has_voice) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",
+      [req.userId, productId, langs, q.cost, style, q.clip_source, clipHasVoice ? null : voiceSpeed && JSON.stringify(voiceSpeed), clipHasVoice], // the source the user was quoted for
     );
     await changeCredits(c, req.userId, -q.cost, "job", String(rows[0].id));
     return rows[0];
@@ -154,13 +158,23 @@ r.post("/", ah(async (req, res) => {
   res.status(201).json(await loadJob(req.userId, job.id));
 }));
 
+/** the history list: enough to recognise, filter and download each job without opening it */
 r.get("/", ah(async (req, res) => {
   const { rows } = await query(
-    `SELECT j.id, j.product_id, p.title AS product_title, j.langs, j.status, j.stage, j.created_at, j.updated_at
-     FROM video_jobs j JOIN products p ON p.id = j.product_id WHERE j.user_id = $1 ORDER BY j.created_at DESC LIMIT 100`,
+    `SELECT j.id, j.product_id, p.title AS product_title, p.images->0->>'path' AS image_path,
+            j.langs, j.status, j.stage, j.clip_source, j.style, j.credits_charged, j.clip_has_voice,
+            j.created_at, j.updated_at,
+            COALESCE((SELECT json_agg(json_build_object('lang', v.lang, 'path', v.path, 'duration', v.duration) ORDER BY v.lang)
+                      FROM videos v WHERE v.job_id = j.id), '[]') AS videos,
+            EXISTS (SELECT 1 FROM credit_ledger c WHERE c.user_id = j.user_id AND c.reason = 'refund' AND c.ref = j.id::text) AS refunded
+     FROM video_jobs j JOIN products p ON p.id = j.product_id WHERE j.user_id = $1 ORDER BY j.created_at DESC LIMIT 200`,
     [req.userId],
   );
-  res.json(rows);
+  res.json(rows.map(({ image_path: img, videos, ...j }) => ({
+    ...j,
+    image_url: mediaUrl(img),
+    videos: videos.map((v) => ({ lang: v.lang, duration: v.duration, url: mediaUrl(v.path) })),
+  })));
 }));
 
 r.get("/:id", ah(async (req, res) => {

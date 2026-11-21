@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { t } from "./i18n.js";
 
 export const PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
@@ -69,11 +70,11 @@ const hasFiles = (e) => [...(e.dataTransfer?.types || [])].some((t) => t === "Fi
 
 /** split dropped/pasted files into usable photos (up to `room`) and a short notice about the rest */
 export function pickPhotos(files, room, { fromWeb = false } = {}) {
-  if (fromWeb) return { photos: [], notice: "That picture is a web link — right-click it → “Copy image”, then press ⌘V / Ctrl+V here." };
+  if (fromWeb) return { photos: [], notice: t("photos.webLink") };
   const ok = files.filter((f) => PHOTO_TYPES.includes(f.type));
   const photos = ok.slice(0, Math.max(0, room));
   const notes = [];
-  if (ok.length < files.length) notes.push(`${files.length - ok.length} file(s) skipped — only JPG, PNG or WebP photos`);
-  if (ok.length > photos.length) notes.push(room > 0 ? `only ${room} more photo(s) fit (max 4)` : "already 4 photos — remove one first");
+  if (ok.length < files.length) notes.push(t("photos.skipped", { n: files.length - ok.length }));
+  if (ok.length > photos.length) notes.push(room > 0 ? t("photos.room", { n: room }) : t("photos.full"));
   return { photos, notice: notes.join(" · ") };
 }

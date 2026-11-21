@@ -21,7 +21,7 @@ export const VOICES = {
  * Build a single-language engine config from a DB script row.
  * script: { hook, lines: string[], captions?: string[], cta }
  */
-export function buildConfig({ clipPath, outPath, lang, script, voice = "female", rate, speed, productVolume = 0.55, speakHook = true, fitToVoice = true }) {
+export function buildConfig({ clipPath, outPath, lang, script, voice = "female", rate, speed, productVolume = 0.55, speakHook = true, fitToVoice = true, tts = true }) {
   return {
     video: clipPath,
     output: outPath,
@@ -30,6 +30,8 @@ export function buildConfig({ clipPath, outPath, lang, script, voice = "female",
     rates: { [lang]: rate || (lang === "th" ? "+8%" : "+0%") },
     // voiceover speed multiplier chosen by the user (1 = natural pace); absent → VOXCPM_SPEED for voxcpm
     ...(Number(speed) > 0 ? { speeds: { [lang]: Number(speed) } } : {}),
+    // false: keep the clip's own voice at full volume and add no voiceover
+    ...(tts === false ? { tts: false } : {}),
     productVolume,
     fitToVoice,
     // the hook is spoken first (from ~0.15s) while it shows at the top — stops the scroll

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { api } from "../api.js";
+import { Link, useNavigate } from "react-router-dom";
+import { api, LANGS, LANG_FLAG } from "../api.js";
 import PhotoPicker from "../PhotoPicker.jsx";
-import { ANGLES, STYLES } from "../options.js";
-import { LANGS } from "../api.js";
+import { ANGLE_KEYS, STYLE_KEYS, angleName, angleDesc, styleName, styleDesc } from "../options.js";
+import { t } from "../i18n.js";
 
 // Runs on the product page in the user's own browser (so the shop's bot protection is not an issue) and
 // opens "Add product" with the name, details, price and photo links it finds. Kept short: it is a bookmark.
@@ -18,6 +18,10 @@ function dataUrlToFile(src, name) {
   return new File([bytes], name, { type: mime });
 }
 
+// the server's import notes are English: show the matching interface-language text when there is one
+const NOTE_KEYS = [["Shopee protects", "new.noteShopee"], ["no product details", "new.noteTiktok"], ["Unknown link", "new.noteUnknown"], ["Only the main photo", "new.noteOnePhoto"]];
+const localNote = (n) => { const hit = NOTE_KEYS.find(([s]) => n.includes(s)); return hit ? t(hit[1]) : n; };
+
 const EMPTY = { title: "", description: "", price: "", currency: "THB", product_url: "", affiliate_url: "", source: "" };
 
 export default function NewProduct() {
@@ -27,6 +31,7 @@ export default function NewProduct() {
   const [link, setLink] = useState("");
   const [importing, setImporting] = useState(false);
   const [importNotes, setImportNotes] = useState([]);
+  const [imported, setImported] = useState(0);
   const [spare, setSpare] = useState([]); // imported photos that did not fit in the 4 slots
   const bookmark = useRef(null);
   // React blocks javascript: links in JSX, so the bookmark's href is set directly
@@ -39,7 +44,7 @@ export default function NewProduct() {
   const nav = useNavigate();
 
   async function importLink(body) {
-    setImporting(true); setError(""); setImportNotes([]);
+    setImporting(true); setError(""); setImportNotes([]); setImported(0);
     try {
       const r = await api("/products/import", { method: "POST", body });
       setFields((f) => ({
@@ -56,7 +61,8 @@ export default function NewProduct() {
       const room = Math.max(0, 4 - photos.length);
       setPhotos((cur) => [...cur, ...files.slice(0, room)]);
       setSpare(files.slice(room));
-      setImportNotes([...(r.images.length ? [`Imported ${r.images.length} photo(s)${r.title ? " and the product name" : ""} — check them before saving.`] : []), ...r.notes]);
+      setImported(r.images.length + (r.title ? 1 : 0));
+      setImportNotes(r.notes.map(localNote));
     } catch (err) { setError(err.message); }
     setImporting(false);
   }
@@ -72,9 +78,9 @@ export default function NewProduct() {
 
   async function submit(e) {
     e.preventDefault();
-    if (!photos.length) return setError("Add at least one product photo");
+    if (!photos.length) return setError(t("new.needPhoto"));
     const chosen = Object.keys(langs).filter((l) => langs[l]);
-    if (!chosen.length) return setError("Choose at least one language");
+    if (!chosen.length) return setError(t("new.needLang"));
     setBusy(true);
     setError("");
     try {
@@ -86,38 +92,48 @@ export default function NewProduct() {
   }
 
   return (
-    <>
-      <h2>Add product</h2>
-      <div className="card form import">
-        <label>Paste a TikTok Shop / Shopee link — fills in the name and photos
-          <div className="row">
-            <input value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://www.tiktok.com/view/product/… or https://shopee.co.th/…" />
-            <button type="button" disabled={importing || !link.trim()} onClick={() => importLink({ url: link.trim() })}>{importing ? "Importing…" : "Import"}</button>
-          </div>
-        </label>
-        {importNotes.map((n) => <p key={n} className="muted small-text">{n}</p>)}
-        <details>
-          <summary className="small-text">More photos + details: the “Send to Affiliate Studio” bookmark</summary>
-          <p className="small-text">Drag this button to your bookmarks bar: <a ref={bookmark} className="bookmarklet" onClick={(e) => e.preventDefault()}>📦 Send to Affiliate Studio</a></p>
-          <p className="muted small-text">Then open any TikTok Shop / Shopee / Lazada product page in your browser and click the bookmark — this page opens with the name, details, price and photos filled in. It only reads the page you are looking at.</p>
-        </details>
-      </div>
-      <form onSubmit={submit} className="card form">
-        <input type="hidden" name="source" value={fields.source} />
-        <label>Product name *<input name="title" required maxLength={200} value={fields.title} onChange={set("title")} /></label>
-        <label>Key details (features, size, material…)<textarea name="description" rows={4} value={fields.description} onChange={set("description")} /></label>
-        <div className="row">
-          <label>Price<input name="price" type="number" step="0.01" min="0" value={fields.price} onChange={set("price")} /></label>
-          <label>Currency<select name="currency" value={fields.currency} onChange={set("currency")}><option>THB</option><option>MMK</option><option>USD</option></select></label>
+    <div className="narrow">
+      <Link to="/" className="back">← {t("nav.products")}</Link>
+      <div className="page-head"><div><h1>{t("new.title")}</h1><p className="muted">{t("new.subtitle")}</p></div></div>
+
+      <section className="card import">
+        <h2 className="card-title"><span className="num">⚡</span>{t("new.importTitle")}</h2>
+        <p className="muted small">{t("new.importText")}</p>
+        <div className="input-row">
+          <input value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://www.tiktok.com/view/product/…  ·  https://shopee.co.th/…"
+            onKeyDown={(e) => { if (e.key === "Enter" && link.trim()) { e.preventDefault(); importLink({ url: link.trim() }); } }} />
+          <button type="button" className="btn primary" disabled={importing || !link.trim()} onClick={() => importLink({ url: link.trim() })}>{importing ? t("new.importing") : t("new.import")}</button>
         </div>
-        <label>Shopee / TikTok product link<input name="product_url" type="url" placeholder="https://shopee.co.th/..." value={fields.product_url} onChange={set("product_url")} /></label>
-        <label>Affiliate link (optional — auto-created for Shopee when API is set up)<input name="affiliate_url" type="url" value={fields.affiliate_url} onChange={set("affiliate_url")} /></label>
+        {imported > 0 && <p className="alert ok">✓ {t("new.imported")}</p>}
+        {importNotes.map((n) => <p key={n} className="alert info">{n}</p>)}
+        <details className="more">
+          <summary>{t("new.bookmarkTitle")}</summary>
+          <ol className="small">
+            <li>{t("new.bookmark1")} <a ref={bookmark} className="bookmarklet" onClick={(e) => e.preventDefault()}>📦 {t("new.bookmarkName")}</a></li>
+            <li>{t("new.bookmark2")}</li>
+            <li>{t("new.bookmark3")}</li>
+          </ol>
+        </details>
+      </section>
+
+      <form onSubmit={submit} className="card form">
+        <h2 className="card-title"><span className="num">✎</span>{t("new.detailsTitle")}</h2>
+        <input type="hidden" name="source" value={fields.source} />
+        <label><span>{t("new.name")} <span className="req">*</span></span><input name="title" required maxLength={200} value={fields.title} onChange={set("title")} placeholder={t("new.namePh")} /></label>
+        <label>{t("new.details")}<textarea name="description" rows={4} value={fields.description} onChange={set("description")} placeholder={t("new.detailsPh")} />
+          <span className="hint">{t("new.detailsHint")}</span></label>
+        <div className="cols">
+          <label>{t("new.price")}<input name="price" type="number" step="0.01" min="0" inputMode="decimal" value={fields.price} onChange={set("price")} /></label>
+          <label className="narrow-field">{t("new.currency")}<select name="currency" value={fields.currency} onChange={set("currency")}><option>THB</option><option>MMK</option><option>USD</option></select></label>
+        </div>
+
         <div className="field">
-          <span className="muted">Product photos * (1–4, clear shots from different angles — each becomes part of the video)</span>
+          <span className="label">{t("new.photos")} <span className="req">*</span></span>
+          <span className="hint">{t("new.photosHint")}</span>
           <PhotoPicker files={photos} onChange={setPhotos} />
           {spare.length > 0 && (
             <div className="spare">
-              <span className="muted small-text">More photos from the link — click one to use it{photos.length >= 4 ? " (remove a photo above first)" : ""}:</span>
+              <span className="hint">{t("new.spare")}{photos.length >= 4 ? ` ${t("new.spareFull")}` : ""}</span>
               <div className="row">
                 {spare.map((f, i) => (
                   <SpareThumb key={`${f.name}-${i}`} file={f} disabled={photos.length >= 4}
@@ -127,35 +143,47 @@ export default function NewProduct() {
             </div>
           )}
         </div>
+
+        <h2 className="card-title"><span className="num">🎬</span>{t("new.videoTitle")}</h2>
         <div className="field">
-          <span className="muted">Video to make (right after saving, AI writes the scripts + the Google Flow storyboard and video prompts)</span>
-          <div className="row">
+          <span className="label">{t("new.langs")}</span>
+          <div className="chips">
             {Object.entries(LANGS).map(([k, label]) => (
-              <label key={k} className="check"><input type="checkbox" checked={langs[k]} onChange={(e) => setLangs({ ...langs, [k]: e.target.checked })} /> {label}</label>
+              <label key={k} className={`chip${langs[k] ? " on" : ""}`}><input type="checkbox" checked={langs[k]} onChange={(e) => setLangs({ ...langs, [k]: e.target.checked })} />{LANG_FLAG[k]} {label}</label>
             ))}
           </div>
-          <div className="row">
-            <label className="check">Script angle
-              <select value={angle} onChange={(e) => setAngle(e.target.value)}>
-                {Object.entries(ANGLES).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
-              </select>
-            </label>
-            <label className="check">Video style
-              <select value={style} onChange={(e) => setStyle(e.target.value)}>
-                {Object.entries(STYLES).map(([k, label]) => <option key={k} value={k}>{label.split(" (")[0]}</option>)}
-              </select>
-            </label>
-          </div>
+          <span className="hint">{t("new.langsHint")}</span>
         </div>
-        {error && <p className="error">{error}</p>}
-        <button disabled={busy}>{busy ? "Saving…" : "Save & write Flow prompts"}</button>
+        <div className="cols">
+          <label>{t("step1.angle")}
+            <select value={angle} onChange={(e) => setAngle(e.target.value)}>{ANGLE_KEYS.map((k) => <option key={k} value={k}>{angleName(k)}</option>)}</select>
+            <span className="hint">{angleDesc(angle)}</span>
+          </label>
+          <label>{t("step1.style")}
+            <select value={style} onChange={(e) => setStyle(e.target.value)}>{STYLE_KEYS.map((k) => <option key={k} value={k}>{styleName(k)}</option>)}</select>
+            <span className="hint">{styleDesc(style)}</span>
+          </label>
+        </div>
+
+        <details className="more">
+          <summary>{t("new.links")}</summary>
+          <label>{t("new.productUrl")}<input name="product_url" type="url" placeholder="https://shopee.co.th/…" value={fields.product_url} onChange={set("product_url")} /></label>
+          <label>{t("new.affiliateUrl")}<input name="affiliate_url" type="url" value={fields.affiliate_url} onChange={set("affiliate_url")} />
+            <span className="hint">{t("new.affiliateHint")}</span></label>
+        </details>
+
+        {error && <p className="alert bad">{error}</p>}
+        <div className="actions">
+          <button className="btn primary lg" disabled={busy}>{busy ? t("new.saving") : `${t("new.save")} →`}</button>
+          <span className="hint">{t("new.saveHint")}</span>
+        </div>
       </form>
-    </>
+    </div>
   );
 }
 
 function SpareThumb({ file, disabled, onPick }) {
   const [src, setSrc] = useState("");
   useEffect(() => { const u = URL.createObjectURL(file); setSrc(u); return () => URL.revokeObjectURL(u); }, [file]);
-  return <button type="button" className="spare-photo" disabled={disabled} onClick={onPick}><img src={src} alt="" /></button>;
+  return <button type="button" className="spare-photo" disabled={disabled} onClick={onPick} title={t("new.usePhoto")}><img src={src} alt="" /></button>;
 }

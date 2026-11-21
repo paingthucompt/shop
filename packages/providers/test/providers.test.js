@@ -381,7 +381,7 @@ test("generateScript: a Burmese reply with Thai letters is sent back with the br
   const mixed = { hook: "အဆင်ပြေမယ့် တู้เย็นလေး", lines: ["Haier ၁၄၉ လิตร ဆိုဒ်လေး"], captions: ["၁၄၉ လီတာ"], cta: "ခြင်းဝါလေးကို နှိပ်ပါ" };
   const good = { hook: "အဆင်ပြေမယ့် ရေခဲသေတ္တာလေး", lines: ["Haier ၁၄၉ လီတာ ဆိုဒ်လေး"], captions: ["၁၄၉ လီတာ"], cta: "ခြင်းဝါလေးကို နှိပ်ပါ" };
   const prompts = [];
-  const replies = [mixed, good];
+  const replies = [{ title: "[BCD]Haier fridge 1 door 149 L", description: "" }, mixed, good]; // 1st = English translation of the Thai name
   globalThis.fetch = async (_url, init) => {
     prompts.push(JSON.parse(init.body).messages[0].content);
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(replies.shift()) } }] }), { status: 200 });
@@ -390,8 +390,11 @@ test("generateScript: a Burmese reply with Thai letters is sent back with the br
     assert.deepEqual(foreignWords(mixed, "my"), ["တู้เย็นလေး", "လิตร"]);
     const s = await generateScript({ title: "[BCD]Haier ตู้เย็น 149 ลิตร" }, "my");
     assert.equal(s.hook, good.hook);
-    assert.equal(prompts.length, 2);
-    assert.match(prompts[1], /mixed in letters of another language in: "တู้เย็นလေး", "လิตร"/);
+    assert.equal(prompts.length, 3);
+    assert.match(prompts[0], /Translate this e-commerce product name/);
+    assert.match(prompts[1], /Product: \[BCD\]Haier fridge 1 door 149 L/); // the Burmese writer never sees the Thai name
+    assert.doesNotMatch(prompts[1], /ตู้เย็น/);
+    assert.match(prompts[2], /mixed in letters of another language in: "တู้เย็นလေး", "လิตร"/);
 
     replies.push(mixed, mixed, mixed); // never fixed → clear error, nothing saved
     await assert.rejects(generateScript({ title: "x" }, "my"), /kept mixing other-language letters/);
@@ -400,4 +403,21 @@ test("generateScript: a Burmese reply with Thai letters is sent back with the br
     delete process.env.LLM_API_KEY;
     delete process.env.LLM_BASE_URL;
   }
+});
+
+test("storyboard video prompt: silent by default; speaking = presenter says the exact script with lip-sync", async () => {
+  const { buildStoryboardVideoPrompt } = await import("../src/flow-prompt.js");
+  const script = { hook: "ของดีต้องลอง", lines: ["ใช้ง่ายมาก"], captions: ["ใช้ง่าย"], cta: "กดตะกร้าเหลืองได้เลย" };
+  const silent = buildStoryboardVideoPrompt({ title: "Mini fan" }, "th", { script, seconds: 10 });
+  assert.match(silent, /Nobody speaks/);
+  assert.doesNotMatch(silent, /Lip-sync/);
+  const talk = buildStoryboardVideoPrompt({ title: "Mini fan" }, "th", { script, seconds: 10, speaking: true });
+  assert.doesNotMatch(talk, /Nobody speaks/);
+  assert.match(talk, /"ของดีต้องลอง ใช้งานง่ายมาก|"ของดีต้องลอง ใช้ง่ายมาก กดตะกร้าเหลืองได้เลย"/);
+  assert.match(talk, /Lip-sync: .*match every syllable of the Thai speech/);
+  assert.match(talk, /fictional person/);
+  assert.match(talk, /No music/);
+  const my = buildStoryboardVideoPrompt({ title: "Mini fan" }, "my", { script: { hook: "စမ်းကြည့်ပါ", lines: ["သုံးရလွယ်တယ်"], cta: "ဝယ်လိုက်ပါ" }, seconds: 10, speaking: true });
+  assert.match(my, /Burmese \(Myanmar\)/);
+  assert.match(my, /Yangon accent/);
 });

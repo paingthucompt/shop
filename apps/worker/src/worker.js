@@ -131,6 +131,8 @@ async function processJob(jobId) {
       lang,
       script,
       speed: job.voice_speed?.[lang],
+      // the clip already speaks (Flow presenter with lip-sync): keep its audio, add captions only
+      ...(job.clip_has_voice ? { tts: false, productVolume: 1 } : {}),
       onLog: (l) => process.env.DEBUG_ENGINE && process.stdout.write(l),
     });
     for (const k of ["path", "srt"]) {

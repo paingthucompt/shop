@@ -138,3 +138,9 @@ test("buildConfig: the chosen voice speed goes into the engine config; none → 
   assert.deepEqual(buildConfig({ clipPath: "c.mp4", outPath: "o.mp4", lang: "my", script, speed: 1.2 }).speeds, { my: 1.2 });
   assert.equal(buildConfig({ clipPath: "c.mp4", outPath: "o.mp4", lang: "my", script }).speeds, undefined);
 });
+
+test("buildConfig: a clip with its own voice → tts false (captions only); default keeps the voiceover", () => {
+  const script = { hook: "h", lines: ["a"], captions: [], cta: "c" };
+  assert.equal(buildConfig({ clipPath: "c.mp4", outPath: "o.mp4", lang: "th", script, tts: false, productVolume: 1 }).tts, false);
+  assert.equal(buildConfig({ clipPath: "c.mp4", outPath: "o.mp4", lang: "th", script }).tts, undefined);
+});

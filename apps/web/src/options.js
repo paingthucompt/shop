@@ -1,22 +1,12 @@
-// Choices shared by the "Add product" and product pages
+// Choices shared by the "Add product" and product pages (labels live in i18n.js)
+import { t } from "./i18n.js";
 
-export const STYLES = {
-  product: "Product demo (hands, close-ups, real use)",
-  presenter: "With a presenter (AI person holds & shows the product, voiceover in each language)",
-  unboxing: "Unboxing (hands open the package and reveal the product)",
-  hero: "Premium hero shot (studio, 360° rotation, no people)",
-  macro: "Macro details (texture and key details up close)",
-  in_action: "Product in action (real everyday use and result)",
-  flatlay: "Flat-lay (aesthetic top-down arrangement)",
-};
+/** how the clip looks */
+export const STYLE_KEYS = ["product", "presenter", "unboxing", "hero", "macro", "in_action", "flatlay"];
+/** how the AI script sells — the same angle is used for every selected language */
+export const ANGLE_KEYS = ["auto", "problem_solution", "review", "unboxing", "soft_sell", "hard_sell", "storytelling"];
 
-/** how the AI script sells — same angle is used for every selected language */
-export const ANGLES = {
-  auto: "AI picks",
-  problem_solution: "Problem → solution",
-  review: "Honest review",
-  unboxing: "Unboxing / first impression",
-  soft_sell: "Soft sell (lifestyle)",
-  hard_sell: "Direct sell (strong CTA)",
-  storytelling: "Mini story",
-};
+export const styleName = (k) => t(`style.${k}`);
+export const styleDesc = (k) => t(`style.${k}.desc`);
+export const angleName = (k) => t(`angle.${k}`);
+export const angleDesc = (k) => t(`angle.${k}.desc`);

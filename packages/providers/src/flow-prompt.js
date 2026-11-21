@@ -190,13 +190,33 @@ export function buildStoryboardPrompt(product, lang, { script, seconds = 15, sho
   ].join("\n");
 }
 
+// who speaks in a talking clip (always a fictional, ordinary-looking creator — never a real person)
+const SPEAKER = {
+  th: { voice: "a warm, upbeat young Thai woman with a natural Bangkok accent", language: "Thai" },
+  my: { voice: "a warm, upbeat young Burmese woman with a natural Yangon accent", language: "Burmese (Myanmar)" },
+};
+
+/** the whole script as one spoken text: hook, lines, call to action */
+export const spokenText = (script) => beatsOf(script).join(" ");
+
 /**
- * Flow Video prompt that turns the storyboard image (step ①, same language) into the silent clip.
+ * Flow Video prompt that turns the storyboard image (step ①, same language) into the clip.
  * The user attaches the storyboard + the product photos as ingredients; panels and timings here match
  * the storyboard prompt exactly, so the video follows the picture they already approved.
+ *   speaking = false → silent clip; the app adds the voiceover (one clip can serve both languages)
+ *   speaking = true  → a presenter says the script on camera in THIS language with lip-sync
+ *                      (one clip per language; upload it with "the clip already has the voice")
  */
-export function buildStoryboardVideoPrompt(product, lang, { script, seconds = 15, shots, style = "product" } = {}) {
+export function buildStoryboardVideoPrompt(product, lang, { script, seconds = 15, shots, style = "product", speaking = false } = {}) {
   const panels = storyboardPanels(script, lang, { seconds, shots });
+  const who = SPEAKER[lang];
+  const audio = speaking && who ? [
+    `Presenter: one ordinary-looking Southeast Asian woman in her 20s, casual clothes, natural make-up, a fictional person (not a celebrity or a real influencer). She appears in every panel, holding, showing or using the product.`,
+    `She speaks ON CAMERA, looking into the lens — ${who.voice} — in natural, fluent ${who.language}, friendly and lively like a real TikTok seller talking to a friend, saying EXACTLY this script and nothing else, finished within ${seconds} seconds:`,
+    `"${spokenText(script)}"`,
+    `Lip-sync: her face and mouth are clearly visible whenever she speaks, and her lip and jaw movements match every syllable of the ${who.language} speech exactly, in time. Her mouth never moves in silence and no words are heard while her mouth is closed. No off-screen narration, no dubbing, no other voices. Close-ups of only the product happen between sentences, while she is not speaking.`,
+    `Audio: only her voice and natural sounds of the product being handled. No music.`,
+  ] : [`Nobody speaks: no voice, no narration, no lip movement. Audio: only natural sounds of the product being handled. No music.`];
   return [
     `Vertical 9:16, ${seconds} seconds, photorealistic social-commerce product video.`,
     `Follow the attached STORYBOARD image: it has ${panels.length} numbered panels. Turn them into ONE continuous video, in this order and timing, with smooth natural camera moves and quick cuts between panels:`,
@@ -204,7 +224,7 @@ export function buildStoryboardVideoPrompt(product, lang, { script, seconds = 15
     `Product: ${promptTitle(product.title)} — exactly as in the attached product photos: same shape, colours, materials, logo and label text. It is one single product that looks identical in every shot; never morph, duplicate or redesign it. Do not invent features.`,
     styleLook(style),
     `Results must be realistic and modest — no exaggerated or instant transformations.`,
-    `Nobody speaks: no voice, no narration, no lip movement. Audio: only natural sounds of the product being handled. No music.`,
+    ...audio,
     `The storyboard's labels, headline, captions, buttons and prices are only a plan — show NO text, subtitles, captions, buttons, logos or watermarks anywhere in the video. Every frame is a full-screen live-action shot (never the storyboard layout itself).`,
   ].join("\n");
 }

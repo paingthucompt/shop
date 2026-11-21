@@ -17,4 +17,11 @@ export async function api(path, { method = "GET", body, form } = {}) {
   return data;
 }
 
+// the header shows the credit balance; pages call creditsChanged() after spending or a refund
+const CREDITS_EVENT = "avs:credits";
+export const creditsChanged = () => window.dispatchEvent(new Event(CREDITS_EVENT));
+export const onCreditsChanged = (fn) => { window.addEventListener(CREDITS_EVENT, fn); return () => window.removeEventListener(CREDITS_EVENT, fn); };
+
+/** the language of the VIDEOS (not of the interface) */
 export const LANGS = { th: "ไทย (Thai)", my: "မြန်မာ (Myanmar)" };
+export const LANG_FLAG = { th: "🇹🇭", my: "🇲🇲" };

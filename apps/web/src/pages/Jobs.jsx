@@ -1,73 +1,240 @@
-import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { api, LANGS } from "../api.js";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { api, creditsChanged, LANGS, LANG_FLAG } from "../api.js";
+import { t, getLang } from "../i18n.js";
 
-const STAGE = { clip: "Making the product clip…", "render:th": "Adding Thai voice & text…", "render:my": "Adding Myanmar voice & text…", done: "Done" };
+const WORKING = new Set(["queued", "running"]);
+const SOURCE_ICON = { photos: "📷", upload: "🎬", scenes: "🖼", ai_video: "✨", auto: "⚙️" };
+const locale = () => (getLang() === "my" ? "my-MM" : undefined);
+const shortLang = (l) => LANGS[l].split(" ")[0];
 
-function JobDetail({ id, onStatus }) {
+/** "3 min ago" for today's jobs, otherwise the clock time (the day is the group heading) */
+function when(iso) {
+  const d = new Date(iso);
+  const min = Math.round((Date.now() - d) / 60000);
+  if (min < 1) return t("jobs.justNow");
+  if (min < 60) return t("jobs.minAgo", { n: min });
+  if (min < 6 * 60 && d.toDateString() === new Date().toDateString()) return t("jobs.hAgo", { n: Math.round(min / 60) });
+  return d.toLocaleTimeString(locale(), { hour: "numeric", minute: "2-digit" });
+}
+
+/** group heading: Today / Yesterday / weekday + date */
+function dayLabel(iso) {
+  const d = new Date(iso);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const day = new Date(d); day.setHours(0, 0, 0, 0);
+  const diff = Math.round((today - day) / 86400000);
+  if (diff === 0) return t("jobs.today");
+  if (diff === 1) return t("jobs.yesterday");
+  return d.toLocaleDateString(locale(), { weekday: "long", day: "numeric", month: "long", year: day.getFullYear() === today.getFullYear() ? undefined : "numeric" });
+}
+
+/** clip → one render per language → done, as a row of steps */
+function Progress({ job }) {
+  const steps = [{ key: "clip", label: t("jobs.stage.clip") }, ...job.langs.map((l) => ({ key: `render:${l}`, label: t("jobs.stage.render", { lang: shortLang(l) }) })), { key: "done", label: t("jobs.stage.done") }];
+  const at = job.status === "succeeded" ? steps.length - 1 : Math.max(0, steps.findIndex((s) => s.key === job.stage));
+  return (
+    <ol className="progress">
+      {steps.map((s, i) => {
+        const state = job.status === "failed" && i === at ? "bad" : i < at || job.status === "succeeded" ? "done" : i === at && job.status !== "queued" ? "now" : "todo";
+        return <li key={s.key} className={state}><span className="dot">{state === "done" ? "✓" : state === "bad" ? "!" : i + 1}</span>{s.label}</li>;
+      })}
+    </ol>
+  );
+}
+
+/** small inline progress for a row in the list: how far along clip → languages it is */
+function MiniProgress({ job }) {
+  const keys = ["clip", ...job.langs.map((l) => `render:${l}`)];
+  const at = Math.max(0, keys.indexOf(job.stage));
+  const pct = job.status === "queued" ? 4 : Math.round(((at + 0.5) / (keys.length + 0.5)) * 100);
+  const label = job.status === "queued" ? t("jobs.status.queued") : job.stage === "clip" ? t("jobs.stage.clip") : t("jobs.stage.render", { lang: shortLang(job.stage?.split(":")[1] || job.langs[0]) });
+  return (
+    <span className="mini-progress" title={label}>
+      <span className="bar"><span style={{ width: `${pct}%` }} /></span>
+      <span className="small">{label}…</span>
+    </span>
+  );
+}
+
+const StatusBadge = ({ status }) => <span className={`badge ${status}`}>{t(`jobs.status.${status}`)}</span>;
+
+function JobDetail({ id, onStatus, onClose }) {
   const [job, setJob] = useState(null);
   const [error, setError] = useState("");
+  const box = useRef(null);
   useEffect(() => {
     let timer, cancelled = false;
     setJob(null); setError("");
+    box.current?.scrollIntoView({ block: "start" });
     const load = () => api(`/jobs/${id}`).then((j) => {
       if (cancelled) return; // a response for a job we already navigated away from
       setJob(j);
-      onStatus?.(j.id, j.status, j.stage);
-      if (j.status === "queued" || j.status === "running") timer = setTimeout(load, 3000);
+      onStatus?.(j);
+      if (WORKING.has(j.status)) timer = setTimeout(load, 3000);
+      else if (j.refunded) creditsChanged();
     }).catch((e) => !cancelled && setError(e.message));
     load();
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [id]);
+  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (error) return <p className="error">{error}</p>;
-  if (!job) return <p className="muted">Loading…</p>;
   return (
-    <div className="card">
-      <h3>Video job #{job.id} — <span className={`status ${job.status}`}>{job.status}</span></h3>
-      {job.status !== "succeeded" && <p className="muted">{STAGE[job.stage] || "Waiting in queue…"}</p>}
-      {job.error && <p className="error">{job.error}{job.refunded ? ` — ${job.credits_charged} credits refunded` : ""}</p>}
-      <div className="videos">
-        {job.videos.map((v) => (
-          <div key={v.lang} className="video">
-            <h4>{LANGS[v.lang]}</h4>
-            <video src={v.url} controls playsInline />
-            <div className="row">
-              <a className="button" href={`${v.url}&download=1`}>Download MP4</a>
-              {v.srt_url && <a className="ghost button" href={`${v.srt_url}&download=1`}>Captions .srt</a>}
-            </div>
+    <section className="card job" ref={box}>
+      {error && <p className="alert bad">{error}</p>}
+      {!job && !error && <div className="skeleton" />}
+      {job && <>
+        <div className="row between">
+          <h2>{t("jobs.job", { id: job.id })} <StatusBadge status={job.status} /></h2>
+          <div className="row">
+            <Link to={`/products/${job.product_id}`} className="btn secondary sm">{t("jobs.toProduct")} →</Link>
+            <button type="button" className="btn subtle sm" onClick={onClose} aria-label={t("jobs.close")}>✕</button>
           </div>
+        </div>
+        <Progress job={job} />
+        {WORKING.has(job.status) && <p className="muted small center">{t("jobs.wait")}</p>}
+        {job.error && <p className="alert bad">{job.error}{job.refunded ? ` — ${t("jobs.refunded", { n: job.credits_charged })}` : ""}</p>}
+        {job.videos.length > 0 && (
+          <div className="videos">
+            {job.videos.map((v) => (
+              <div key={v.lang} className="video">
+                <h3>{LANG_FLAG[v.lang]} {LANGS[v.lang]} {v.duration ? <span className="muted small">· {Number(v.duration).toFixed(0)} s</span> : null}</h3>
+                <video src={v.url} controls playsInline preload="metadata" />
+                <div className="row">
+                  <a className="btn primary" href={`${v.url}&download=1`}>⬇ {t("jobs.download")}</a>
+                  {v.srt_url && <a className="btn subtle" href={`${v.srt_url}&download=1`}>{t("jobs.srt")}</a>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {job.status === "succeeded" && <p className="alert info">💡 {t("jobs.next")}</p>}
+      </>}
+    </section>
+  );
+}
+
+function JobRow({ j, current }) {
+  const nav = useNavigate();
+  const used = j.refunded ? 0 : j.credits_charged;
+  return (
+    <li className={`job-card ${j.status}${current ? " current" : ""}`}>
+      <Link to={`/jobs/${j.id}`} className="job-main" title={j.product_title}>
+        <span className="job-thumb">{j.image_url ? <img src={j.image_url} alt="" loading="lazy" /> : "📦"}<span className="job-flags">{j.langs.map((l) => LANG_FLAG[l]).join("")}</span></span>
+        <span className="job-text">
+          <span className="job-title">{j.product_title}</span>
+          <span className="job-meta">
+            <span>#{j.id}</span>
+            <span>{SOURCE_ICON[j.clip_source] || "⚙️"} {t(`jobs.src.${j.clip_source}`)}{j.clip_has_voice ? ` · 🗣` : ""}</span>
+            <span>{j.refunded ? t("jobs.refundedShort") : t("jobs.creditsN", { n: used })}</span>
+            <span>{when(j.created_at)}</span>
+          </span>
+        </span>
+      </Link>
+      <span className="job-side">
+        {WORKING.has(j.status) ? <MiniProgress job={j} /> : <StatusBadge status={j.status} />}
+        {j.status === "succeeded" && [...j.videos].sort((a, b) => j.langs.indexOf(a.lang) - j.langs.indexOf(b.lang)).map((v) => (
+          <a key={v.lang} className="btn secondary sm" href={`${v.url}&download=1`} title={t("jobs.downloadLang", { lang: LANGS[v.lang] })}>⬇ {LANG_FLAG[v.lang]} {shortLang(v.lang)}</a>
         ))}
-      </div>
-    </div>
+        {j.status === "failed" && <button type="button" className="btn secondary sm" onClick={() => nav(`/products/${j.product_id}#step-3`)}>↻ {t("jobs.retry")}</button>}
+      </span>
+    </li>
   );
 }
 
 export default function Jobs() {
   const { id } = useParams();
-  const [jobs, setJobs] = useState([]);
-  useEffect(() => { api("/jobs").then(setJobs).catch(() => {}); }, [id]);
-  // keep the list row in sync with the job being watched
-  const onStatus = (jobId, status, stage) =>
-    setJobs((list) => list.map((j) => (j.id === jobId ? { ...j, status, stage } : j)));
+  const nav = useNavigate();
+  const [jobs, setJobs] = useState(null);
+  const [filter, setFilter] = useState("all");
+  const [q, setQ] = useState("");
+
+  // the list refreshes itself while something is still being made
+  useEffect(() => {
+    let timer, cancelled = false;
+    const load = () => api("/jobs").then((list) => {
+      if (cancelled) return;
+      setJobs(list);
+      if (list.some((j) => WORKING.has(j.status))) timer = setTimeout(load, 5000);
+    }).catch(() => !cancelled && setJobs((cur) => cur || []));
+    load();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [id]);
+  // keep the row of the job being watched in sync
+  const onStatus = (job) => setJobs((list) => list?.map((j) => (j.id === job.id ? { ...j, status: job.status, stage: job.stage, refunded: job.refunded, videos: job.videos.map(({ lang, duration, url }) => ({ lang, duration, url })) } : j)));
+
+  const counts = useMemo(() => {
+    const c = { all: 0, succeeded: 0, working: 0, failed: 0, videos: 0, credits: 0 };
+    for (const j of jobs || []) {
+      c.all++;
+      if (j.status === "succeeded") { c.succeeded++; c.videos += j.videos.length; }
+      else if (j.status === "failed") c.failed++;
+      else c.working++;
+      if (!j.refunded) c.credits += j.credits_charged || 0;
+    }
+    return c;
+  }, [jobs]);
+
+  const shown = (jobs || []).filter((j) =>
+    (filter === "all" || (filter === "working" ? WORKING.has(j.status) : j.status === filter)) &&
+    (!q.trim() || j.product_title.toLowerCase().includes(q.trim().toLowerCase()) || String(j.id) === q.trim().replace("#", "")));
+  const groups = [];
+  for (const j of shown) {
+    const label = dayLabel(j.created_at);
+    if (groups.at(-1)?.label !== label) groups.push({ label, items: [] });
+    groups.at(-1).items.push(j);
+  }
+
   return (
     <>
-      <h2>Videos</h2>
-      {id && <JobDetail id={id} onStatus={onStatus} />}
-      <table>
-        <thead><tr><th>#</th><th>Product</th><th>Languages</th><th>Status</th><th>Created</th></tr></thead>
-        <tbody>
-          {jobs.map((j) => (
-            <tr key={j.id}>
-              <td><Link to={`/jobs/${j.id}`}>{j.id}</Link></td>
-              <td>{j.product_title}</td>
-              <td>{j.langs.join(", ")}</td>
-              <td><span className={`status ${j.status}`}>{j.status}</span></td>
-              <td>{new Date(j.created_at).toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="page-head">
+        <div>
+          <h1>{t("jobs.title")}</h1>
+          <p className="muted">{t("jobs.subtitle")}</p>
+        </div>
+        <Link to="/" className="btn primary">＋ {t("jobs.new")}</Link>
+      </div>
+
+      {id && <JobDetail id={id} onStatus={onStatus} onClose={() => nav("/jobs")} />}
+
+      {jobs?.length > 0 && (
+        <div className="stats">
+          <div className="stat"><span className="stat-n ok-text">{counts.videos}</span><span className="muted small">{t("jobs.stats.videos")}</span></div>
+          <div className="stat"><span className="stat-n warn-text">{counts.working}</span><span className="muted small">{t("jobs.stats.working")}</span></div>
+          <div className="stat"><span className="stat-n bad-text">{counts.failed}</span><span className="muted small">{t("jobs.stats.failed")}</span></div>
+          <div className="stat"><span className="stat-n">{counts.credits}</span><span className="muted small">{t("jobs.stats.credits")}</span></div>
+        </div>
+      )}
+
+      {jobs?.length > 0 && (
+        <div className="toolbar">
+          <div className="seg" role="tablist" aria-label={t("jobs.filter")}>
+            {[["all", counts.all], ["succeeded", counts.succeeded], ["working", counts.working], ["failed", counts.failed]].map(([k, n]) => (
+              <button key={k} type="button" role="tab" aria-selected={filter === k} className={filter === k ? "on" : ""} onClick={() => setFilter(k)}>
+                {t(`jobs.filter.${k}`)} <span className="count">{n}</span>
+              </button>
+            ))}
+          </div>
+          <input className="search" type="search" placeholder={t("jobs.search")} value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+      )}
+
+      {!jobs && <div className="card skeleton" />}
+      {jobs && !jobs.length && (
+        <div className="card empty">
+          <div className="empty-icon" aria-hidden>🎬</div>
+          <h2>{t("jobs.emptyTitle")}</h2>
+          <p className="muted">{t("jobs.emptyText")}</p>
+          <Link to="/" className="btn primary">{t("jobs.toProducts")}</Link>
+        </div>
+      )}
+      {jobs?.length > 0 && !shown.length && <p className="muted center">{t("jobs.noMatch")}</p>}
+
+      {groups.map((g) => (
+        <section key={g.label} className="job-group">
+          <h2 className="group-title">{g.label} <span className="muted small">· {g.items.length}</span></h2>
+          <ul className="job-list">{g.items.map((j) => <JobRow key={j.id} j={j} current={String(j.id) === id} />)}</ul>
+        </section>
+      ))}
     </>
   );
 }

@@ -66,7 +66,7 @@ if (WEB_DIST && existsSync(join(WEB_DIST, "index.html"))) {
 app.use((err, _req, res, _next) => {
   const status = err.status || (err.name === "MulterError" ? 400 : 500);
   if (status >= 500) console.error(err);
-  res.status(status).json({ error: status >= 500 ? "server error" : err.message });
+  res.status(status).json({ error: status >= 500 && !err.expose ? "server error" : err.message });
 });
 
 // Cloud Run sets PORT and needs 0.0.0.0; locally stay on loopback

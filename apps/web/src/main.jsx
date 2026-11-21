@@ -1,7 +1,8 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Routes, Route, Link, Navigate, useNavigate } from "react-router-dom";
-import { api, auth } from "./api.js";
+import { BrowserRouter, Routes, Route, Link, NavLink, Navigate, useNavigate } from "react-router-dom";
+import { api, auth, onCreditsChanged } from "./api.js";
+import { t, getLang, setLang, UI_LANGS } from "./i18n.js";
 import Login from "./pages/Login.jsx";
 import Products from "./pages/Products.jsx";
 import NewProduct from "./pages/NewProduct.jsx";
@@ -9,38 +10,62 @@ import Product from "./pages/Product.jsx";
 import Jobs from "./pages/Jobs.jsx";
 import "./style.css";
 
-function Shell({ children }) {
+function LangSwitch({ lang, onChange }) {
+  return (
+    <div className="lang-switch" role="group" aria-label={t("nav.language")}>
+      {Object.entries(UI_LANGS).map(([k, label]) => (
+        <button key={k} type="button" className={k === lang ? "on" : ""} aria-pressed={k === lang} onClick={() => onChange(k)}>{label}</button>
+      ))}
+    </div>
+  );
+}
+
+function Shell({ children, lang, onLang }) {
   const [me, setMe] = useState(null);
   const nav = useNavigate();
-  useEffect(() => { api("/auth/me").then(setMe).catch(() => {}); }, []);
+  useEffect(() => {
+    const load = () => api("/auth/me").then(setMe).catch(() => {});
+    load();
+    return onCreditsChanged(load); // refresh the balance after spending / refunds
+  }, []);
   if (!auth.token) return <Navigate to="/login" />;
   return (
     <>
-      <header>
-        <Link to="/" className="brand">Affiliate Video Studio</Link>
+      <header className="topbar">
+        <Link to="/" className="brand"><span className="logo" aria-hidden>▶</span><span>{t("app.name")}</span></Link>
         <nav>
-          <Link to="/">Products</Link>
-          <Link to="/jobs">Videos</Link>
+          <NavLink to="/" end>{t("nav.products")}</NavLink>
+          <NavLink to="/jobs">{t("nav.videos")}</NavLink>
         </nav>
-        <span className="credits">{me ? `${me.credits} credits` : ""}</span>
-        <button className="ghost" onClick={() => { auth.token = null; nav("/login"); }}>Log out</button>
+        <div className="topbar-right">
+          {me && <span className="pill credits" title={t("nav.creditsHint")}>🪙 {t("nav.credits", { n: me.credits })}</span>}
+          <LangSwitch lang={lang} onChange={onLang} />
+          <button className="btn subtle sm" onClick={() => { auth.token = null; nav("/login"); }}>{t("nav.logout")}</button>
+        </div>
       </header>
       <main>{children}</main>
     </>
   );
 }
 
-createRoot(document.getElementById("root")).render(
-  <StrictMode>
+function App() {
+  const [lang, setL] = useState(getLang());
+  const change = (l) => { setLang(l); setL(l); };
+  useEffect(() => { document.documentElement.lang = lang; }, [lang]);
+  // key={lang}: every page re-renders in the chosen language
+  const shell = (page) => <Shell key={lang} lang={lang} onLang={change}>{page}</Shell>;
+  return (
     <BrowserRouter>
       <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/" element={<Shell><Products /></Shell>} />
-        <Route path="/products/new" element={<Shell><NewProduct /></Shell>} />
-        <Route path="/products/:id" element={<Shell><Product /></Shell>} />
-        <Route path="/jobs" element={<Shell><Jobs /></Shell>} />
-        <Route path="/jobs/:id" element={<Shell><Jobs /></Shell>} />
+        <Route path="/login" element={<Login key={lang} lang={lang} onLang={change} LangSwitch={LangSwitch} />} />
+        <Route path="/" element={shell(<Products />)} />
+        <Route path="/products/new" element={shell(<NewProduct />)} />
+        <Route path="/products/:id" element={shell(<Product />)} />
+        <Route path="/jobs" element={shell(<Jobs />)} />
+        <Route path="/jobs/:id" element={shell(<Jobs />)} />
       </Routes>
     </BrowserRouter>
-  </StrictMode>,
-);
+  );
+}
+
+createRoot(document.getElementById("root")).render(<StrictMode><App /></StrictMode>);

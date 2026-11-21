@@ -469,7 +469,8 @@ const GAP = 0.25, LEAD = cfg.lead ?? 0.15;
 const TAIL = 0.8;
 const hookShow = cfg.hookSeconds ?? 2.8;
 const ctaShow = cfg.ctaSeconds ?? 2.8;
-let useTts = !noTts && lines.length > 0;
+// cfg.tts === false: the clip already has the voice (a presenter speaking with lip-sync) — captions only
+let useTts = !noTts && cfg.tts !== false && lines.length > 0;
 const clips = [];
 if (useTts) {
   if (TTS_PROVIDER === "edge") {
