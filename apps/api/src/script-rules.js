@@ -5,6 +5,9 @@ const clean = (v) => String(v ?? "").replace(/\s+/g, " ").trim();
 
 const SCRIPT_RE = { th: /[฀-๿]/, my: /[က-႟ꧠ-꧿ꩠ-ꩿ]/ };
 const LANG_LABEL = { th: "Thai", my: "Myanmar" };
+// any letter outside the script's own alphabet and Latin (brand names): Hebrew, Chinese, Cyrillic …
+const OTHER_LETTER = Object.fromEntries(Object.entries(LANG_LABEL).map(([l, name]) =>
+  [l, new RegExp(`(?![\\p{Script=Latin}\\p{Script=${name}}\\p{Script=Inherited}])[\\p{L}\\p{M}]`, "u")]));
 
 /**
  * Each video is one language: a Myanmar script must not contain Thai text and vice versa
@@ -16,6 +19,8 @@ export function foreignScriptIssue(lang, s) {
   for (const [other, re] of Object.entries(SCRIPT_RE)) {
     if (other !== lang && re.test(text)) return `the ${LANG_LABEL[lang]} script contains ${LANG_LABEL[other]} text — rewrite it in ${LANG_LABEL[lang]}`;
   }
+  const stray = OTHER_LETTER[lang] ? [...new Set(text.split(/\s+/).filter((w) => OTHER_LETTER[lang].test(w)))] : [];
+  if (stray.length) return `the ${LANG_LABEL[lang]} script contains letters of another language (${stray.join(" ")}) — rewrite it in ${LANG_LABEL[lang]}`;
   return null;
 }
 

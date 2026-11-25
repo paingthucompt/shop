@@ -64,6 +64,11 @@ export function parseScript(text) {
 }
 
 const SCRIPT_RE = { th: /[฀-๿]/, my: /[က-႟ꧠ-꧿ꩠ-ꩿ]/ };
+// a letter that is neither in `lang`'s own script nor Latin (brand names) — Thai in a Burmese line, but also
+// Hebrew / Chinese / Cyrillic … that a model sometimes slips in (seen: Hebrew "ממש" in a Burmese hook)
+const SCRIPT_NAME = { th: "Thai", my: "Myanmar" };
+const OTHER_LETTER = Object.fromEntries(Object.entries(SCRIPT_NAME).map(([l, name]) =>
+  [l, new RegExp(`(?![\\p{Script=Latin}\\p{Script=${name}}\\p{Script=Inherited}])[\\p{L}\\p{M}]`, "u")]));
 
 /**
  * A short product name usable inside a `lang` hook: the title's first phrase (≤ 24 characters),
@@ -164,17 +169,16 @@ async function chat(content, temperature) {
   throw new Error(last);
 }
 
-/** words of a script that contain letters of the OTHER language (e.g. Thai "ตู้" inside a Burmese line) */
+/** words of a script with letters of another language (Thai "ตู้" or Hebrew "ממש" inside a Burmese line) */
 export function foreignWords(script, lang) {
   const text = [script.hook, ...script.lines, ...(script.captions || []), script.cta].join(" ");
-  const others = Object.entries(SCRIPT_RE).filter(([l]) => l !== lang).map(([, re]) => re);
-  return [...new Set(text.split(/\s+/).filter((w) => others.some((re) => re.test(w))))];
+  return [...new Set(text.split(/\s+/).filter((w) => OTHER_LETTER[lang].test(w)))];
 }
 
 /** true when the product name / details contain letters of a script language other than `lang` */
 export const hasForeignText = (product, lang) => {
   const text = `${product.title || ""} ${product.description || ""}`;
-  return Object.entries(SCRIPT_RE).some(([l, re]) => l !== lang && re.test(text));
+  return OTHER_LETTER[lang].test(text);
 };
 
 /**

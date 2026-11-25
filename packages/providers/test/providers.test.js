@@ -430,3 +430,11 @@ test("gemini-video retryDelayMs: Retry-After wins, else 0.5 s doubling capped at
     assert.ok(ms >= max / 2 && ms <= max, `${attempt}: ${ms}`);
   }
 });
+
+test("foreignWords / hasForeignText: any non-Latin letter outside the language's own script counts", async () => {
+  const { foreignWords, hasForeignText } = await import("../src/llm.js");
+  assert.deepEqual(foreignWords({ hook: "အပြင်မှာ ממש ပူနေပြီလား။", lines: ["iPhone 15 ကို"], cta: "ဝယ်ပါ" }, "my"), ["ממש"]);
+  assert.deepEqual(foreignWords({ hook: "ลมแรง USB-C", lines: ["เงียบ"], cta: "กดเลย" }, "th"), []);
+  assert.equal(hasForeignText({ title: "小风扇 USB" }, "my"), true);
+  assert.equal(hasForeignText({ title: "Fan Café 3000" }, "my"), false);
+});

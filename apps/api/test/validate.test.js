@@ -27,6 +27,12 @@ test("a Myanmar script with Thai text is rejected (and vice versa); Latin brand 
   assert.match(validateScript({ hook: "พัดลม", lines: ["a"], cta: "c" }, "my").error, /Thai/);
 });
 
+test("letters of any other language are rejected too (a model once put Hebrew in a Burmese hook)", () => {
+  assert.match(foreignScriptIssue("my", { hook: "အပြင်မှာ ממש ပူနေပြီလား။", lines: ["a"], cta: "c" }), /another language \(ממש\)/);
+  assert.match(foreignScriptIssue("th", { hook: "小风扇 ดีมาก", lines: ["a"], cta: "c" }), /another language/);
+  assert.equal(foreignScriptIssue("th", { hook: "ร้อนจนหัวจะระเบิดแล้ว! USB-C 3 ระดับ", lines: ["Café ลมแรง"], cta: "กดตะกร้าเหลืองเลย" }), null);
+});
+
 test("captions stay aligned with lines; empty line drops its caption; limits + language checked", () => {
   const { script } = validateScript({ hook: "h", lines: ["a", " ", "c"], captions: ["A", "lost", ""], cta: "x" }, "th");
   assert.deepEqual(script.lines, ["a", "c"]);
