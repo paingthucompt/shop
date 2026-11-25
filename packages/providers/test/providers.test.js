@@ -438,3 +438,19 @@ test("foreignWords / hasForeignText: any non-Latin letter outside the language's
   assert.equal(hasForeignText({ title: "小风扇 USB" }, "my"), true);
   assert.equal(hasForeignText({ title: "Fan Café 3000" }, "my"), false);
 });
+
+test("llmConfig: LLM_MODEL_MY / _TH pick the model for one language; Gemini keys stay on Gemini models", async () => {
+  const { llmConfig, DEFAULT_GEMINI_TEXT_MODEL } = await import("../src/llm.js");
+  const env = { GEMINI_API_KEY: "k", LLM_MODEL: "gemini-flash-lite-latest", LLM_MODEL_MY: "gemini-3.6-flash" };
+  assert.equal(llmConfig(env, "my").model, "gemini-3.6-flash");
+  assert.equal(llmConfig(env, "th").model, "gemini-flash-lite-latest");
+  assert.equal(llmConfig(env).model, "gemini-flash-lite-latest");
+  assert.equal(llmConfig({ GEMINI_API_KEY: "k", LLM_MODEL_MY: "gpt-4o" }, "my").model, DEFAULT_GEMINI_TEXT_MODEL);
+});
+
+test("withSafeCta: a CTA that doesn't mention the basket gets the known-good phrase", async () => {
+  const { withSafeCta } = await import("../src/llm.js");
+  assert.equal(withSafeCta({ cta: "ဝါးနီလေးကိုနှိပ်ပြီးဝယ်လိုက်ပါ" }, "my").cta, "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါ");
+  assert.equal(withSafeCta({ cta: "အောက်က ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါနော်။" }, "my").cta, "အောက်က ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါနော်။");
+  assert.equal(withSafeCta({ cta: "สั่งเลย" }, "th").cta, "กดตะกร้าเหลืองได้เลย");
+});

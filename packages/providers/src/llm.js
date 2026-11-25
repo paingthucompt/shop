@@ -113,14 +113,17 @@ const listOf = (v) => String(v || "").split(",").map((x) => x.trim()).filter(Boo
 
 /**
  * { key, baseUrl, model } or null (→ built-in sample scripts).
+ *   lang → LLM_MODEL_TH / LLM_MODEL_MY override LLM_MODEL for that language's scripts (a bigger model
+ *          writes much better Burmese than flash-lite: right words for e.g. "hairball", "fibre")
  *   LLM_API_KEY set     → that provider (LLM_BASE_URL, default OpenAI)
  *   else GEMINI_API_KEY → Gemini; a leftover non-Gemini LLM_BASE_URL / LLM_MODEL is ignored so the
  *                         Gemini key is never sent to another provider
  */
-export function llmConfig(env = process.env) {
+export function llmConfig(env = process.env, lang) {
+  const own = lang ? env[`LLM_MODEL_${String(lang).toUpperCase()}`] : "";
   if (env.LLM_API_KEY) {
     return {
-      key: env.LLM_API_KEY, baseUrl: env.LLM_BASE_URL || "https://api.openai.com/v1", model: env.LLM_MODEL || "gpt-4.1-mini",
+      key: env.LLM_API_KEY, baseUrl: env.LLM_BASE_URL || "https://api.openai.com/v1", model: own || env.LLM_MODEL || "gpt-4.1-mini",
       fallbacks: listOf(env.LLM_FALLBACK_MODELS),
     };
   }
@@ -128,7 +131,7 @@ export function llmConfig(env = process.env) {
     return {
       key: env.GEMINI_API_KEY,
       baseUrl: env.LLM_BASE_URL?.includes("generativelanguage.googleapis.com") ? env.LLM_BASE_URL : GEMINI_OPENAI_URL,
-      model: env.LLM_MODEL?.startsWith("gemini") ? env.LLM_MODEL : DEFAULT_GEMINI_TEXT_MODEL,
+      model: [own, env.LLM_MODEL].find((m) => m?.startsWith("gemini")) || DEFAULT_GEMINI_TEXT_MODEL,
       fallbacks: env.LLM_FALLBACK_MODELS !== undefined ? listOf(env.LLM_FALLBACK_MODELS) : DEFAULT_GEMINI_FALLBACKS,
     };
   }
@@ -138,8 +141,8 @@ export function llmConfig(env = process.env) {
 const llmEnabled = () => Boolean(llmConfig());
 
 /** one user message → the model's text reply */
-async function chat(content, temperature) {
-  const { key: LLM_API_KEY, baseUrl: LLM_BASE_URL, model: main, fallbacks = [] } = llmConfig();
+async function chat(content, temperature, lang) {
+  const { key: LLM_API_KEY, baseUrl: LLM_BASE_URL, model: main, fallbacks = [] } = llmConfig(process.env, lang);
   // providers answer 429/503 ("high demand") in bursts and sometimes hang: cap each try, and move on to
   // the next fallback model (or retry the last one) instead of waiting minutes on a busy model
   const timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 40_000);
@@ -201,6 +204,14 @@ export async function englishProduct(product) {
   return { ...product, title: clean(j.title), description: clean(j.description) || null };
 }
 
+// the CTA must name the shopping basket; small models sometimes invent words (seen: Burmese "ဝါးနီလေး",
+// "red bamboo", instead of "ခြင်းဝါလေး", "yellow basket") → fall back to the known-good phrase
+const CTA_OK = { th: /ตะกร้า/, my: /ခြင်း/ };
+const CTA_DEFAULT = { th: "กดตะกร้าเหลืองได้เลย", my: "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါ" };
+export function withSafeCta(script, lang) {
+  return CTA_OK[lang] && !CTA_OK[lang].test(script.cta || "") ? { ...script, cta: CTA_DEFAULT[lang] } : script;
+}
+
 /** a script problem the user can act on (shown as is, not as "server error") */
 export class ScriptError extends Error {
   constructor(message) { super(message); this.name = "ScriptError"; this.status = 422; }
@@ -223,9 +234,9 @@ export async function generateScript(product, lang, { seconds = 10, angle = "aut
       ? `\n\nYour previous answer mixed in letters of another language in: ${bad.map((w) => `"${w}"`).join(", ")}. ` +
         `Write those words fully in ${LANG_NAME[lang]} letters (translate them; Latin brand names and digits are fine). Use NO other script.`
       : "";
-    script = parseScript(await chat(prompt + fix, attempt === 1 ? 0.8 : 0.5));
+    script = parseScript(await chat(prompt + fix, attempt === 1 ? 0.8 : 0.5, lang));
     bad = foreignWords(script, lang);
-    if (!bad.length) return script;
+    if (!bad.length) return withSafeCta(script, lang);
     console.warn(`[llm] ${lang} script has foreign letters (${bad.join(" ")}) — asking again (${attempt}/3)`);
   }
   throw new ScriptError(`the AI kept mixing other-language letters into the ${lang === "my" ? "Burmese" : "Thai"} script (${bad.join(" ")}) — press “Write again”, or write the product name in English`);
