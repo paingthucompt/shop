@@ -151,7 +151,7 @@ function AiChoices({ prefs, catalog, has, onSaved }) {
 }
 
 /** finished videos → the user's own Telegram bot: token from @BotFather, Start in the bot, Connect */
-function TelegramCard({ saved, chatName, onChanged }) {
+function TelegramCard({ saved, chatName, keepLocal, onChanged }) {
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState(null);
@@ -189,6 +189,13 @@ function TelegramCard({ saved, chatName, onChanged }) {
             </span>
           </div>
           {!chatName && <p className="hint">{t("tg.step3")}</p>}
+          {chatName && (
+            <label className="check">
+              <input type="checkbox" checked={!keepLocal} disabled={!!busy}
+                onChange={(e) => run("keep", async () => { await api("/keys/telegram/options", { method: "PUT", body: { keep_local: !e.target.checked } }); return e.target.checked ? t("tg.willRemove") : t("tg.willKeep"); })} />
+              {t("tg.removeAfter")}
+            </label>
+          )}
           <div className="row">
             <button type="button" className={`btn ${chatName ? "secondary" : "primary"} sm`} onClick={connect} disabled={!!busy}>
               {busy === "connect" ? t("keys.checking") : chatName ? t("tg.reconnect") : t("tg.connect")}
@@ -227,7 +234,7 @@ export default function Settings() {
             <AiChoices key={JSON.stringify(data.prefs)} prefs={data.prefs || {}} catalog={data.catalog}
               has={{ openai: !!byId.openai, higgsfield: !!byId.higgsfield }} onSaved={load} />
           )}
-          <TelegramCard saved={byId.telegram} chatName={data.prefs?.telegram_chat_name} onChanged={load} />
+          <TelegramCard saved={byId.telegram} chatName={data.prefs?.telegram_chat_name} keepLocal={!!data.prefs?.telegram_keep_local} onChanged={load} />
           {byId.seedance && (
             <p className="alert info row between">
               <span>{t("keys.legacySeedance")}</span>

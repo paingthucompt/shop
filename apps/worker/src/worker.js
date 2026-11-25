@@ -9,6 +9,7 @@ import { basename, join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { query, failJob, recordUsage, loadUserKeys, loadUserPrefs } from "@app/db";
 import { seedance, geminiVideo, higgsfield, sceneImages, llm, usage, keys, aiCatalog, telegram } from "@app/providers";
+import { removeSentVideos, DELETE_AFTER_MIN } from "./cleanup.js";
 import { renderVideo, makePhotoClip, makeSceneClip, normalizeClip, makePortraitFrame, voiceEnabled } from "@app/video-engine";
 
 const QUEUE_NAME = "video-jobs";
@@ -234,6 +235,13 @@ async function fail(jobId, err) {
 }
 
 const connection = new IORedis(process.env.REDIS_URL || "redis://127.0.0.1:6379", { maxRetriesPerRequest: null });
+// ---------------------------------------------------------------- remove files that reached Telegram
+const cleanup = () => removeSentVideos({ query, storageDir: STORAGE_DIR }).catch((err) => console.warn(`[cleanup] ${err.message}`));
+if (DELETE_AFTER_MIN > 0) {
+  cleanup();
+  setInterval(cleanup, 10 * 60_000).unref(); // every 10 minutes → removed 60–70 min after sending
+}
+
 const worker = new Worker(
   QUEUE_NAME,
   async (bullJob) => {

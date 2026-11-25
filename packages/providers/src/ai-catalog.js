@@ -34,6 +34,8 @@ export function cleanPrefs(p = {}) {
   // the Telegram chat finished videos go to (set by "Connect", not by the AI choices form)
   if (/^-?\d{1,20}$/.test(String(p.telegram_chat_id ?? ""))) out.telegram_chat_id = String(p.telegram_chat_id);
   if (out.telegram_chat_id && typeof p.telegram_chat_name === "string") out.telegram_chat_name = p.telegram_chat_name.slice(0, 80);
+  // true = keep the video files on this machine after they reached Telegram (default: removed after an hour)
+  if (p.telegram_keep_local === true) out.telegram_keep_local = true;
   return out;
 }
 

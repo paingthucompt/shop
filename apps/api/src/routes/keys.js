@@ -61,10 +61,17 @@ r.get("/", ah(async (req, res) => {
 /** PUT /api/keys/prefs { script?, voice?, voice_b?, video_provider?, gemini_video?, higgsfield_model? } → prefs */
 r.put("/prefs", ah(async (req, res) => {
   // the Telegram chat is set by "Connect", not by this form: keep it
-  const { telegram_chat_id, telegram_chat_name } = aiCatalog.cleanPrefs(await loadUserPrefs(req.userId));
-  const { telegram_chat_id: _i, telegram_chat_name: _n, ...body } = req.body || {};
-  const prefs = aiCatalog.cleanPrefs({ ...body, telegram_chat_id, telegram_chat_name });
+  const { telegram_chat_id, telegram_chat_name, telegram_keep_local } = aiCatalog.cleanPrefs(await loadUserPrefs(req.userId));
+  const { telegram_chat_id: _i, telegram_chat_name: _n, telegram_keep_local: _k, ...body } = req.body || {};
+  const prefs = aiCatalog.cleanPrefs({ ...body, telegram_chat_id, telegram_chat_name, telegram_keep_local });
   res.json({ prefs: aiCatalog.cleanPrefs(await saveUserPrefs(req.userId, prefs)) });
+}));
+
+/** PUT /api/keys/telegram/options { keep_local } — keep video files here after they reached Telegram */
+r.put("/telegram/options", ah(async (req, res) => {
+  const prefs = aiCatalog.cleanPrefs(await loadUserPrefs(req.userId));
+  const next = { ...prefs, telegram_keep_local: req.body?.keep_local === true };
+  res.json({ prefs: aiCatalog.cleanPrefs(await saveUserPrefs(req.userId, aiCatalog.cleanPrefs(next))) });
 }));
 
 /**

@@ -19,7 +19,7 @@ async function loadJob(userId, id) {
   const j = rows[0];
   if (!j) return null;
   const [{ rows: vids }, { rows: refund }, { rows: spend }] = await Promise.all([
-    query("SELECT lang, path, srt_path, duration, telegram_sent_at FROM videos WHERE job_id = $1 ORDER BY lang", [id]),
+    query("SELECT lang, path, srt_path, duration, telegram_sent_at, file_removed_at FROM videos WHERE job_id = $1 ORDER BY lang", [id]),
     query("SELECT 1 FROM credit_ledger WHERE user_id = $1 AND reason = 'refund' AND ref = $2 LIMIT 1", [userId, String(id)]),
     query("SELECT kind, sum(usd) AS usd, bool_or(NOT priced) AS unpriced FROM api_usage WHERE job_id = $1 GROUP BY kind ORDER BY kind", [id]),
   ]);
@@ -30,7 +30,9 @@ async function loadJob(userId, id) {
     error_code: j.status === "failed" ? publicErrorCode(j.error) : null,
     refunded: refund.length > 0,
     clip_url: mediaUrl(j.clip_path),
-    videos: vids.map((v) => ({ lang: v.lang, duration: v.duration, url: mediaUrl(v.path), srt_url: mediaUrl(v.srt_path), telegram_sent_at: v.telegram_sent_at })),
+    videos: vids.map((v) => (v.file_removed_at
+      ? { lang: v.lang, duration: v.duration, url: null, srt_url: null, telegram_sent_at: v.telegram_sent_at, file_removed_at: v.file_removed_at }
+      : { lang: v.lang, duration: v.duration, url: mediaUrl(v.path), srt_url: mediaUrl(v.srt_path), telegram_sent_at: v.telegram_sent_at })),
     // what the job's API calls really cost (AI clip + voiceover); scripts / scene images are on the product
     api_usd: Math.round(spend.reduce((a, s) => a + Number(s.usd), 0) * 1e4) / 1e4,
     api_cost: spend.map((s) => ({ kind: s.kind, usd: Math.round(Number(s.usd) * 1e4) / 1e4, unpriced: s.unpriced })),
@@ -188,7 +190,7 @@ r.get("/", ah(async (req, res) => {
             j.langs, j.status, j.stage, j.clip_source, j.style, j.credits_charged, j.own_key, j.clip_has_voice,
             j.created_at, j.updated_at,
             (SELECT COALESCE(sum(u.usd), 0) FROM api_usage u WHERE u.job_id = j.id) AS api_usd,
-            COALESCE((SELECT json_agg(json_build_object('lang', v.lang, 'path', v.path, 'duration', v.duration) ORDER BY v.lang)
+            COALESCE((SELECT json_agg(json_build_object('lang', v.lang, 'path', v.path, 'duration', v.duration, 'telegram_sent_at', v.telegram_sent_at, 'file_removed_at', v.file_removed_at) ORDER BY v.lang)
                       FROM videos v WHERE v.job_id = j.id), '[]') AS videos,
             EXISTS (SELECT 1 FROM credit_ledger c WHERE c.user_id = j.user_id AND c.reason = 'refund' AND c.ref = j.id::text) AS refunded
      FROM video_jobs j JOIN products p ON p.id = j.product_id WHERE j.user_id = $1 ORDER BY j.created_at DESC LIMIT 200`,
@@ -198,7 +200,8 @@ r.get("/", ah(async (req, res) => {
     ...j,
     api_usd: Math.round(Number(j.api_usd) * 1e4) / 1e4,
     image_url: mediaUrl(img),
-    videos: videos.map((v) => ({ lang: v.lang, duration: v.duration, url: mediaUrl(v.path) })),
+    // a removed video (it is in the user's Telegram) has no file here any more → no url
+    videos: videos.map((v) => ({ lang: v.lang, duration: v.duration, url: v.file_removed_at ? null : mediaUrl(v.path), telegram_sent_at: v.telegram_sent_at, file_removed_at: v.file_removed_at })),
   })));
 }));
 
@@ -216,8 +219,8 @@ r.post("/:id/telegram", ah(async (req, res) => {
   const token = (await loadUserKeys(req.userId)).telegram;
   const chatId = aiCatalog.cleanPrefs(await loadUserPrefs(req.userId)).telegram_chat_id;
   if (!token || !chatId) return res.status(400).json({ error: "connect your Telegram bot in Settings first", code: "telegram_not_connected" });
-  const { rows: vids } = await query("SELECT id, lang, path, duration FROM videos WHERE job_id = $1 ORDER BY lang", [id]);
-  if (!vids.length) return res.status(400).json({ error: "this job has no finished videos" });
+  const { rows: vids } = await query("SELECT id, lang, path, duration FROM videos WHERE job_id = $1 AND file_removed_at IS NULL ORDER BY lang", [id]);
+  if (!vids.length) return res.status(410).json({ error: "these videos were already removed from this machine — they are in your Telegram", code: "video_removed" });
   let sent = 0;
   for (const v of vids) {
     const { rows: [script] } = await query("SELECT hook, lines, captions, speakers, cta, format FROM scripts WHERE product_id = $1 AND lang = $2", [job.product_id, v.lang]);

@@ -588,3 +588,7 @@ body:has(.auth) { background:
 /* Telegram */
 .tg-steps { margin: 4px 0 10px; padding-left: 20px; display: grid; gap: 4px; color: var(--muted); }
 .tg-row { margin-top: 14px; }
+
+.video-removed { width: 270px; max-width: 100%; aspect-ratio: 9 / 16; border-radius: var(--radius); border: 1.5px dashed var(--line-strong); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 20px; text-align: center; color: var(--muted); }
+.video-removed .icon { color: var(--info); }
+.pill.in-tg { background: var(--info-soft); color: var(--info); font-size: 12px; }

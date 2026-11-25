@@ -115,16 +115,18 @@ function JobDetail({ id, onStatus, onClose }) {
             {job.videos.map((v) => (
               <div key={v.lang} className="video">
                 <h3>{LANG_FLAG[v.lang]} {LANGS[v.lang]} {v.duration ? <span className="muted small">· {Number(v.duration).toFixed(0)} s</span> : null}</h3>
-                <video src={v.url} controls playsInline preload="metadata" />
-                <div className="row">
+                {v.file_removed_at ? (
+                  <div className="video-removed"><Icon name="upload" size={26} /><strong>{t("tg.inTelegram")}</strong><span className="muted small">{t("tg.removedHint")}</span></div>
+                ) : <video src={v.url} controls playsInline preload="metadata" />}
+                {!v.file_removed_at && <div className="row">
                   <a className="btn primary" href={`${v.url}&download=1`}><Icon name="download" size={17} />{t("jobs.download")}</a>
                   {v.srt_url && <a className="btn subtle" href={`${v.srt_url}&download=1`}>{t("jobs.srt")}</a>}
-                </div>
+                </div>}
               </div>
             ))}
           </div>
         )}
-        {job.status === "succeeded" && job.videos.length > 0 && (
+        {job.status === "succeeded" && job.videos.some((v) => !v.file_removed_at) && (
           <div className="row tg-row">
             <button type="button" className="btn secondary sm" onClick={sendTelegram} disabled={tg.busy}>
               <Icon name="upload" size={15} />{tg.busy ? t("tg.sending") : job.videos.every((v) => v.telegram_sent_at) ? t("tg.resend") : t("tg.send")}
@@ -197,9 +199,9 @@ function JobRow({ j, current }) {
       </Link>
       <span className="job-side">
         {WORKING.has(j.status) ? <MiniProgress job={j} /> : <StatusBadge status={j.status} />}
-        {j.status === "succeeded" && [...j.videos].sort((a, b) => j.langs.indexOf(a.lang) - j.langs.indexOf(b.lang)).map((v) => (
-          <a key={v.lang} className="btn secondary sm" href={`${v.url}&download=1`} title={t("jobs.downloadLang", { lang: LANGS[v.lang] })}><Icon name="download" size={15} />{LANG_FLAG[v.lang]} {shortLang(v.lang)}</a>
-        ))}
+        {j.status === "succeeded" && [...j.videos].sort((a, b) => j.langs.indexOf(a.lang) - j.langs.indexOf(b.lang)).map((v) => (v.url
+          ? <a key={v.lang} className="btn secondary sm" href={`${v.url}&download=1`} title={t("jobs.downloadLang", { lang: LANGS[v.lang] })}><Icon name="download" size={15} />{LANG_FLAG[v.lang]} {shortLang(v.lang)}</a>
+          : <span key={v.lang} className="pill in-tg" title={t("tg.removedHint")}><Icon name="upload" size={13} />{LANG_FLAG[v.lang]} Telegram</span>))}
         {j.status === "failed" && <button type="button" className="btn secondary sm" onClick={() => nav(`/products/${j.product_id}#step-3`)}>↻ {t("jobs.retry")}</button>}
       </span>
     </li>
