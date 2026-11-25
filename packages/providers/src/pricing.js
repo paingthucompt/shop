@@ -29,12 +29,14 @@ const AUDIO_TOKENS_PER_SECOND = 25;
 const VIDEO = {
   "gemini-omni-1.2-flash": { "360p": 0.0232, "720p": 0.0695, "1080p": 0.1043 },
   seedance: { "480p": 0.103, "720p": 0.231 },
-  // Higgsfield (open.higgsfield.ai/pricing, 2026-11-25), keyed by model path. Kling 2.5 Turbo Pro isn't on
-  // that page: ≈ US$0.07/s is what other hosts charge for it — check the first bill and correct with PRICES_JSON.
+  // Higgsfield, keyed by model path — checked against a real Higgsfield bill on 2026-11-26 (10 s, 720p start
+  // frame, the model's own sound on): Seedance 2.5 $2.65 and Kling 4.0 $1.88 per clip, much more than the
+  // list prices on open.higgsfield.ai/pricing ($0.118/s, $0.126/s). Kling 2.5 Turbo / 4.0 Flash: the bill
+  // left ≈ $0.66 per clip for them, close to the estimates below.
   "kling-video/v2.5-turbo/pro/image-to-video": { "720p": 0.07 },
   "kling-video/v4.0-flash/image-to-video": { "720p": 0.063 },
-  "kling-video/v4.0/image-to-video": { "720p": 0.126 },
-  "bytedance/seedance-2.5/image-to-video": { "720p": 0.118 },
+  "kling-video/v4.0/image-to-video": { "720p": 0.188 },
+  "bytedance/seedance-2.5/image-to-video": { "720p": 0.265 },
   "bytedance/seedance-2.0/image-to-video": { "720p": 0.08 },
   "alibaba/wan-3.0/image-to-video": { "720p": 0.038 },
 };

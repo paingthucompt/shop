@@ -9,7 +9,8 @@ import { providerError } from "./api-errors.js";
 const LANG_NAME = { th: "Thai (ภาษาไทย)", my: "Burmese (မြန်မာဘာသာ, Unicode)" };
 const CTA_HINT = {
   th: 'a short call to action telling viewers to tap the yellow basket, e.g. "กดตะกร้าเหลืองได้เลย"',
-  my: 'a short call to action telling viewers to tap the basket to buy, e.g. "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါ"',
+  // a polite invitation, never an order ("…ဝယ်လိုက်ပါ" sounds like a command to Burmese viewers)
+  my: 'a short, polite invitation (never an order) telling viewers they can tap the yellow basket to buy, said softly like a friendly female seller, e.g. "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လို့ရပါတယ်ရှင့်" — never "ဝယ်လိုက်ပါ", "ဝယ်လိုက်တော့", "နှိပ်ပါ"',
 };
 
 /**
@@ -69,7 +70,7 @@ export function buildScriptPrompt(product, lang, seconds = 10, angle = "auto", f
     drama
       ? `- captions: leave every caption "" (the spoken dialogue is shown as subtitles).`
       : `- captions: one on-screen key phrase per line (2–5 words, max 30 characters), same order as lines. It is NOT the spoken sentence — it is the selling point at a glance for muted viewers (e.g. a spec, a benefit, a number).`,
-    `- cta: ${CTA_HINT[lang]}${drama ? " (said by B, naturally, to A and the viewer)" : ""}.`,
+    `- cta: ${CTA_HINT[lang]}${drama ? ` (said by B, naturally, to A and the viewer${lang === "my" ? `; B may be a man, so end with "…ရပါတယ်နော်" instead of "ရှင့်"` : ""})` : ""}.`,
     ``,
     drama
       ? `Return ONLY JSON: {"hook": "...", "lines": ["...", "..."], "speakers": ["B", "A"], "captions": ["", ""], "cta": "..."}`
@@ -133,7 +134,7 @@ const MOCK = {
       hook: n ? `${n} ကို စမ်းကြည့်ပါ!` : "ဒီပစ္စည်းလေး စမ်းကြည့်ပါ!",
       lines: ["ဗူးဖွင့်လိုက်တာနဲ့ လှနေပြီ", "သုံးရလွယ်ပြီး ဈေးနဲ့ထိုက်တန်တယ်"],
       captions: ["ဗူးဖွင့်ကတည်းက လှ", "ဈေးနဲ့ ထိုက်တန်"],
-      cta: "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါ",
+      cta: "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လို့ရပါတယ်ရှင့်",
     };
   },
 };
@@ -263,9 +264,17 @@ export async function promptProduct(product) {
 // the CTA must name the shopping basket; small models sometimes invent words (seen: Burmese "ဝါးနီလေး",
 // "red bamboo", instead of "ခြင်းဝါလေး", "yellow basket") → fall back to the known-good phrase
 const CTA_OK = { th: /ตะกร้า/, my: /ခြင်း/ };
-const CTA_DEFAULT = { th: "กดตะกร้าเหลืองได้เลย", my: "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါ" };
-export function withSafeCta(script, lang) {
-  return CTA_OK[lang] && !CTA_OK[lang].test(script.cta || "") ? { ...script, cta: CTA_DEFAULT[lang] } : script;
+const CTA_DEFAULT = { th: "กดตะกร้าเหลืองได้เลย", my: "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လို့ရပါတယ်ရှင့်" };
+// a mini drama's CTA is said by B (often a man's voice): the same invitation without the female "ရှင့်"
+const CTA_DEFAULT_DRAMA = { ...CTA_DEFAULT, my: "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လို့ရပါတယ်နော်" };
+// Burmese CTAs that give an order instead of inviting ("buy it now!") — replaced with the polite one
+const CTA_ORDER = { my: /ဝယ်လိုက်(ပါ|တော့|နော်)|နှိပ်(လိုက်)?ပါ(?!တယ်)|ဝယ်ပါ(?!တယ်)|မြန်မြန်/ };
+export function withSafeCta(script, lang, format = "voiceover") {
+  const def = (format === "drama" ? CTA_DEFAULT_DRAMA : CTA_DEFAULT)[lang];
+  const cta = script.cta || "";
+  if (CTA_OK[lang] && !CTA_OK[lang].test(cta)) return { ...script, cta: def };
+  if (CTA_ORDER[lang]?.test(cta)) return { ...script, cta: def };
+  return script;
 }
 
 /** a script problem the user can act on (shown as is, not as "server error") */
@@ -292,7 +301,7 @@ export async function generateScript(product, lang, { seconds = 10, angle = "aut
       : "";
     script = parseScript(await chat(prompt + fix, attempt === 1 ? 0.8 : 0.5, lang, "script"));
     bad = foreignWords(script, lang);
-    if (!bad.length) return withSafeCta(script, lang);
+    if (!bad.length) return withSafeCta(script, lang, format);
     console.warn(`[llm] ${lang} script has foreign letters (${bad.join(" ")}) — asking again (${attempt}/3)`);
   }
   throw new ScriptError(`the AI kept mixing other-language letters into the ${lang === "my" ? "Burmese" : "Thai"} script (${bad.join(" ")}) — press “Write again”, or write the product name in English`);

@@ -450,8 +450,11 @@ test("llmConfig: LLM_MODEL_MY / _TH pick the model for one language; Gemini keys
 
 test("withSafeCta: a CTA that doesn't mention the basket gets the known-good phrase", async () => {
   const { withSafeCta } = await import("../src/llm.js");
-  assert.equal(withSafeCta({ cta: "ဝါးနီလေးကိုနှိပ်ပြီးဝယ်လိုက်ပါ" }, "my").cta, "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါ");
-  assert.equal(withSafeCta({ cta: "အောက်က ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါနော်။" }, "my").cta, "အောက်က ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါနော်။");
+  assert.equal(withSafeCta({ cta: "ဝါးနီလေးကိုနှိပ်ပြီးဝယ်လိုက်ပါ" }, "my").cta, "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လို့ရပါတယ်ရှင့်");
+  // an order ("buy it!") becomes a polite invitation; a polite one is kept
+  assert.equal(withSafeCta({ cta: "အောက်က ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါနော်။" }, "my").cta, "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လို့ရပါတယ်ရှင့်");
+  assert.equal(withSafeCta({ cta: "ခြင်းဝါလေးကို နှိပ်ပြီး အခုပဲ ဝယ်လိုက်တော့နော်။" }, "my", "drama").cta, "ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လို့ရပါတယ်နော်");
+  assert.equal(withSafeCta({ cta: "ခြင်းဝါလေးကို နှိပ်ပြီး မှာယူလို့ရပါတယ်ရှင့်" }, "my").cta, "ခြင်းဝါလေးကို နှိပ်ပြီး မှာယူလို့ရပါတယ်ရှင့်");
   assert.equal(withSafeCta({ cta: "สั่งเลย" }, "th").cta, "กดตะกร้าเหลืองได้เลย");
 });
 
