@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { query, tx, changeCredits, failJob } from "@app/db";
-import { seedance, higgsfield, pricing, sceneImages, keys, aiCatalog } from "@app/providers";
+import { query, tx, changeCredits, failJob, loadUserKeys, loadUserPrefs } from "@app/db";
+import { seedance, higgsfield, pricing, sceneImages, keys, aiCatalog, telegram } from "@app/providers";
 import { ah, requireAuth, withUserKeys, videoQueue, mediaUrl } from "../lib.js";
 import { parseAiProvider, parseClipSource, parseId, parseLangs, parseStyle, parseVoiceSpeed, publicError, publicErrorCode, VOICE_SPEED } from "../validate.js";
 import { foreignScriptIssue } from "../script-rules.js";
@@ -19,7 +19,7 @@ async function loadJob(userId, id) {
   const j = rows[0];
   if (!j) return null;
   const [{ rows: vids }, { rows: refund }, { rows: spend }] = await Promise.all([
-    query("SELECT lang, path, srt_path, duration FROM videos WHERE job_id = $1 ORDER BY lang", [id]),
+    query("SELECT lang, path, srt_path, duration, telegram_sent_at FROM videos WHERE job_id = $1 ORDER BY lang", [id]),
     query("SELECT 1 FROM credit_ledger WHERE user_id = $1 AND reason = 'refund' AND ref = $2 LIMIT 1", [userId, String(id)]),
     query("SELECT kind, sum(usd) AS usd, bool_or(NOT priced) AS unpriced FROM api_usage WHERE job_id = $1 GROUP BY kind ORDER BY kind", [id]),
   ]);
@@ -30,7 +30,7 @@ async function loadJob(userId, id) {
     error_code: j.status === "failed" ? publicErrorCode(j.error) : null,
     refunded: refund.length > 0,
     clip_url: mediaUrl(j.clip_path),
-    videos: vids.map((v) => ({ lang: v.lang, duration: v.duration, url: mediaUrl(v.path), srt_url: mediaUrl(v.srt_path) })),
+    videos: vids.map((v) => ({ lang: v.lang, duration: v.duration, url: mediaUrl(v.path), srt_url: mediaUrl(v.srt_path), telegram_sent_at: v.telegram_sent_at })),
     // what the job's API calls really cost (AI clip + voiceover); scripts / scene images are on the product
     api_usd: Math.round(spend.reduce((a, s) => a + Number(s.usd), 0) * 1e4) / 1e4,
     api_cost: spend.map((s) => ({ kind: s.kind, usd: Math.round(Number(s.usd) * 1e4) / 1e4, unpriced: s.unpriced })),
@@ -206,6 +206,30 @@ r.get("/:id", ah(async (req, res) => {
   const job = await loadJob(req.userId, parseId(req.params.id));
   if (!job) return res.status(404).json({ error: "job not found" });
   res.json(job);
+}));
+
+/** POST /api/jobs/:id/telegram — (re)send this job's videos to the user's Telegram bot → { sent } */
+r.post("/:id/telegram", ah(async (req, res) => {
+  const id = parseId(req.params.id);
+  const { rows: [job] } = await query("SELECT p.*, j.product_id FROM video_jobs j JOIN products p ON p.id = j.product_id WHERE j.id = $1 AND j.user_id = $2", [id, req.userId]);
+  if (!job) return res.status(404).json({ error: "job not found" });
+  const token = (await loadUserKeys(req.userId)).telegram;
+  const chatId = aiCatalog.cleanPrefs(await loadUserPrefs(req.userId)).telegram_chat_id;
+  if (!token || !chatId) return res.status(400).json({ error: "connect your Telegram bot in Settings first", code: "telegram_not_connected" });
+  const { rows: vids } = await query("SELECT id, lang, path, duration FROM videos WHERE job_id = $1 ORDER BY lang", [id]);
+  if (!vids.length) return res.status(400).json({ error: "this job has no finished videos" });
+  let sent = 0;
+  for (const v of vids) {
+    const { rows: [script] } = await query("SELECT hook, lines, captions, speakers, cta, format FROM scripts WHERE product_id = $1 AND lang = $2", [job.product_id, v.lang]);
+    try {
+      await telegram.sendJobVideo(token, chatId, { file: v.path, product: job, lang: v.lang, duration: Number(v.duration), script, jobId: id });
+    } catch (err) {
+      return res.status(502).json({ error: err.message, sent });
+    }
+    await query("UPDATE videos SET telegram_sent_at = now() WHERE id = $1", [v.id]);
+    sent++;
+  }
+  res.json({ sent });
 }));
 
 export default r;

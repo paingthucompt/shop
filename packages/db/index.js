@@ -73,7 +73,7 @@ export function recordUsage(row) {
 // The encryption key comes from KEYS_SECRET (or, if unset, JWT_SECRET). Changing it makes stored keys
 // unreadable — users then simply enter their key again.
 // seedance (BytePlus) is no longer offered — kept so an old key can still be removed
-export const KEY_PROVIDERS = ["gemini", "higgsfield", "openai", "seedance"];
+export const KEY_PROVIDERS = ["gemini", "higgsfield", "openai", "telegram", "seedance"];
 
 function keysSecret() {
   const s = process.env.KEYS_SECRET || process.env.JWT_SECRET || "";

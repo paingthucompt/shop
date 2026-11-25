@@ -63,6 +63,15 @@ const StatusBadge = ({ status }) => <span className={`badge ${status}`}>{t(`jobs
 function JobDetail({ id, onStatus, onClose }) {
   const [job, setJob] = useState(null);
   const [error, setError] = useState("");
+  const [tg, setTg] = useState({ busy: false, msg: null }); // (re)send to Telegram
+  async function sendTelegram() {
+    setTg({ busy: true, msg: null });
+    try {
+      const r = await api(`/jobs/${id}/telegram`, { method: "POST" });
+      setTg({ busy: false, msg: { ok: true, text: t("tg.sent", { n: r.sent }) } });
+      setJob((j) => ({ ...j, videos: j.videos.map((v) => ({ ...v, telegram_sent_at: new Date().toISOString() })) }));
+    } catch (e) { setTg({ busy: false, msg: { ok: false, text: e.message, code: e.code } }); }
+  }
   const box = useRef(null);
   useEffect(() => {
     let timer, cancelled = false;
@@ -113,6 +122,16 @@ function JobDetail({ id, onStatus, onClose }) {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+        {job.status === "succeeded" && job.videos.length > 0 && (
+          <div className="row tg-row">
+            <button type="button" className="btn secondary sm" onClick={sendTelegram} disabled={tg.busy}>
+              <Icon name="upload" size={15} />{tg.busy ? t("tg.sending") : job.videos.every((v) => v.telegram_sent_at) ? t("tg.resend") : t("tg.send")}
+            </button>
+            {job.videos.some((v) => v.telegram_sent_at) && !tg.msg && <span className="ok-text small">✓ {t("tg.alreadySent")}</span>}
+            {tg.msg && <span className={tg.msg.ok ? "ok-text small" : "bad-text small"}>{tg.msg.text}
+              {tg.msg.code === "telegram_not_connected" && <> <Link to="/settings">{t("err.openSettings")} →</Link></>}</span>}
           </div>
         )}
         {job.status === "succeeded" && <p className="alert info">💡 {t("jobs.next")}</p>}

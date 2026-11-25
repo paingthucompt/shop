@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { query, failJob, recordUsage, loadUserKeys, loadUserPrefs } from "@app/db";
-import { seedance, geminiVideo, higgsfield, sceneImages, llm, usage, keys, aiCatalog } from "@app/providers";
+import { seedance, geminiVideo, higgsfield, sceneImages, llm, usage, keys, aiCatalog, telegram } from "@app/providers";
 import { renderVideo, makePhotoClip, makeSceneClip, normalizeClip, makePortraitFrame, voiceEnabled } from "@app/video-engine";
 
 const QUEUE_NAME = "video-jobs";
@@ -202,6 +202,29 @@ async function processJob(jobId) {
   }
   await setJob(job.id, { status: "succeeded", stage: "done", error: null });
   rmSync(localWorkDir(job.id), { recursive: true, force: true });
+  await sendToTelegram(job, product);
+}
+
+/**
+ * Finished videos → the user's own Telegram bot (if they connected one in Settings). Never fails the
+ * job: a video that couldn't be sent stays unsent (telegram_sent_at null) and can be sent again later.
+ */
+async function sendToTelegram(job, product) {
+  try {
+    const token = (await loadUserKeys(job.user_id)).telegram;
+    const chatId = aiCatalog.cleanPrefs(await loadUserPrefs(job.user_id)).telegram_chat_id;
+    if (!token || !chatId) return;
+    const { rows: vids } = await query("SELECT id, lang, path, duration FROM videos WHERE job_id = $1 AND telegram_sent_at IS NULL ORDER BY lang", [job.id]);
+    for (const v of vids) {
+      const { rows: [script] } = await query("SELECT hook, lines, captions, speakers, cta, format FROM scripts WHERE product_id = $1 AND lang = $2", [product.id, v.lang]);
+      // the video with its post description, then the script as a reply to it
+      await telegram.sendJobVideo(token, chatId, { file: v.path, product, lang: v.lang, duration: Number(v.duration), script, jobId: job.id });
+      await query("UPDATE videos SET telegram_sent_at = now() WHERE id = $1", [v.id]);
+      console.log(`[job ${job.id}] ${v.lang} sent to Telegram`);
+    }
+  } catch (err) {
+    console.warn(`[job ${job.id}] Telegram: ${err.message}`);
+  }
 }
 
 async function fail(jobId, err) {

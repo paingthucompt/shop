@@ -100,3 +100,10 @@ test("AI video prompts: English product text only, and no written text in the cl
   assert.match(prompt.split("\n")[2], /OWN printed logo[\s\S]*MUST stay/); // the product's logo / label is kept
   assert.ok(prompt.length < 1650 + 450); // the description is cut to 400 characters
 });
+
+test("Higgsfield: 720p and no model sound for the models that default to more (they bill extra)", () => {
+  const s = buildRequestBody({ title: "x" }, "https://cdn/x.jpg", { model: "bytedance/seedance-2.5/image-to-video" });
+  assert.deepEqual([s.resolution, s.generate_audio], ["720p", false]);
+  assert.equal(buildRequestBody({ title: "x" }, "u", { model: "kling-video/v4.0/image-to-video" }).resolution, "720p");
+  assert.equal(buildRequestBody({ title: "x" }, "u", { model: "kling-video/v2.5-turbo/pro/image-to-video" }).resolution, undefined);
+});

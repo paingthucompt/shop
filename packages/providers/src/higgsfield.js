@@ -20,12 +20,17 @@ function extraParams() {
 /**
  * The image-to-video models the user can pick (checked against the API 2026-11-26: each takes prompt +
  * image_url + duration; max = the longest clip it accepts). Prices per second in pricing.js.
+ * params: sent with every request. Without them a model uses its own defaults — for Seedance 2.5 and
+ * Kling 4.0 that was a higher resolution with the model's own sound, billed at 1.5–2.2× the listed
+ * "from" price. The app makes 720p videos and adds its own voiceover, so neither is needed.
+ * (accepted values, from the API's validation: Seedance 2.5 resolution 480p|720p|1080p, generate_audio
+ * boolean; Kling 4.0 720p|1080p|4k; Kling 4.0 Flash 720p only)
  */
 export const MODELS = {
   "kling-video/v2.5-turbo/pro/image-to-video": { name: "Kling 2.5 Turbo Pro", durations: [5, 10] },
-  "kling-video/v4.0-flash/image-to-video": { name: "Kling 4.0 Flash", max: 20 },
-  "kling-video/v4.0/image-to-video": { name: "Kling 4.0", max: 30 },
-  "bytedance/seedance-2.5/image-to-video": { name: "Seedance 2.5", max: 30 },
+  "kling-video/v4.0-flash/image-to-video": { name: "Kling 4.0 Flash", max: 20, params: { resolution: "720p" } },
+  "kling-video/v4.0/image-to-video": { name: "Kling 4.0", max: 30, params: { resolution: "720p", generate_audio: false } },
+  "bytedance/seedance-2.5/image-to-video": { name: "Seedance 2.5", max: 30, params: { resolution: "720p", generate_audio: false } },
 };
 
 /** a duration the model accepts, as close as possible to the wanted one */
@@ -86,6 +91,7 @@ export function buildRequestBody(product, imageUrl, opts = {}) {
     image_url: imageUrl,
     duration: opts.duration || c.duration,
     negative_prompt: NEGATIVE,
+    ...MODELS[c.model]?.params,
     ...extraParams(),
   };
 }

@@ -3,8 +3,8 @@
 // Keys are stored encrypted and never returned — only a hint like "AIza…x7Qk".
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
-import { KEY_PROVIDERS, deleteUserKey, listUserKeys, saveUserKey, loadUserPrefs, saveUserPrefs } from "@app/db";
-import { keys, aiCatalog, higgsfield, geminiVideo, sceneImages, pricing } from "@app/providers";
+import { KEY_PROVIDERS, deleteUserKey, listUserKeys, loadUserKeys, saveUserKey, loadUserPrefs, saveUserPrefs } from "@app/db";
+import { keys, aiCatalog, higgsfield, geminiVideo, sceneImages, pricing, telegram } from "@app/providers";
 import { ah, requireAuth, withUserKeys } from "../lib.js";
 import { httpError } from "../validate.js";
 
@@ -60,14 +60,47 @@ r.get("/", ah(async (req, res) => {
 
 /** PUT /api/keys/prefs { script?, voice?, voice_b?, video_provider?, gemini_video?, higgsfield_model? } → prefs */
 r.put("/prefs", ah(async (req, res) => {
-  const prefs = aiCatalog.cleanPrefs(req.body || {});
+  // the Telegram chat is set by "Connect", not by this form: keep it
+  const { telegram_chat_id, telegram_chat_name } = aiCatalog.cleanPrefs(await loadUserPrefs(req.userId));
+  const { telegram_chat_id: _i, telegram_chat_name: _n, ...body } = req.body || {};
+  const prefs = aiCatalog.cleanPrefs({ ...body, telegram_chat_id, telegram_chat_name });
   res.json({ prefs: aiCatalog.cleanPrefs(await saveUserPrefs(req.userId, prefs)) });
+}));
+
+/**
+ * POST /api/keys/telegram/connect — after the user pressed Start in their bot: find that chat, keep it,
+ * and send a test message there. → { chat_name }
+ */
+r.post("/telegram/connect", saveLimiter, ah(async (req, res) => {
+  const token = (await loadUserKeys(req.userId)).telegram;
+  if (!token) throw httpError(400, "add your Telegram bot token first");
+  const chat = await telegram.findChat(token).catch((e) => { throw httpError(400, e.message); });
+  if (!chat) {
+    throw Object.assign(httpError(400, "open your bot in Telegram and press Start (or send it any message), then connect again"), { code: "telegram_no_chat" });
+  }
+  const prefs = aiCatalog.cleanPrefs(await loadUserPrefs(req.userId));
+  await saveUserPrefs(req.userId, { ...prefs, telegram_chat_id: chat.id, telegram_chat_name: chat.name });
+  await telegram.sendText(token, chat.id, [
+    "✅ Affiliate Video Studio is connected. Your finished videos will arrive here.",
+    "✅ ချိတ်ဆက်ပြီးပါပြီ — ထုတ်ပြီးတဲ့ ဗီဒီယိုတွေ ဒီကို ရောက်လာပါမယ်။",
+  ].join("\n"));
+  res.json({ chat_name: chat.name });
 }));
 
 /** PUT /api/keys/:provider { key } → checks the key with the provider, then stores it encrypted */
 r.put("/:provider", saveLimiter, ah(async (req, res) => {
   const provider = parseProvider(req.params.provider);
   const key = String(req.body.key || "").trim();
+  if (provider === "telegram") {
+    // a bot token from @BotFather; it works without any AI key (videos made with credits are sent too)
+    if (!telegram.isBotToken(key)) throw Object.assign(httpError(400, "that doesn't look like a bot token from @BotFather (123456789:AA…)"), { code: "telegram_token" });
+    const bot = await telegram.getBot(key).catch((e) => { throw Object.assign(httpError(400, `the bot token was rejected: ${e.message}`), { code: "telegram_token" }); });
+    await saveUserKey(req.userId, provider, key, true);
+    // a new bot → the old chat no longer applies
+    const { telegram_chat_id: _i, telegram_chat_name: _n, ...prefs } = aiCatalog.cleanPrefs(await loadUserPrefs(req.userId));
+    await saveUserPrefs(req.userId, prefs);
+    return res.json({ ok: true, verified: true, bot: bot.username });
+  }
   if (key.length < 20 || key.length > 300 || /\s/.test(key)) throw httpError(400, "that doesn't look like an API key");
   if (provider === "seedance") throw httpError(400, "BytePlus Seedance keys are no longer used — add a Higgsfield key instead");
   // Higgsfield credentials are a key ID and a secret: stored together as "ID:SECRET"
@@ -87,7 +120,12 @@ r.put("/:provider", saveLimiter, ah(async (req, res) => {
 r.delete("/:provider", ah(async (req, res) => {
   const provider = parseProvider(req.params.provider);
   await deleteUserKey(req.userId, provider);
-  if (provider === "gemini") await Promise.all(KEY_PROVIDERS.filter((p) => p !== "gemini").map((p) => deleteUserKey(req.userId, p)));
+  // the AI keys need Gemini; the Telegram bot doesn't
+  if (provider === "gemini") await Promise.all(KEY_PROVIDERS.filter((p) => !["gemini", "telegram"].includes(p)).map((p) => deleteUserKey(req.userId, p)));
+  if (provider === "telegram") {
+    const { telegram_chat_id: _i, telegram_chat_name: _n, ...prefs } = aiCatalog.cleanPrefs(await loadUserPrefs(req.userId));
+    await saveUserPrefs(req.userId, prefs);
+  }
   res.status(204).end();
 }));
 

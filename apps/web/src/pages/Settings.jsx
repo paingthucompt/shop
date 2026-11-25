@@ -150,6 +150,57 @@ function AiChoices({ prefs, catalog, has, onSaved }) {
   );
 }
 
+/** finished videos → the user's own Telegram bot: token from @BotFather, Start in the bot, Connect */
+function TelegramCard({ saved, chatName, onChanged }) {
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState("");
+  const [msg, setMsg] = useState(null);
+  const run = async (what, fn) => {
+    setBusy(what); setMsg(null);
+    try { setMsg({ ok: true, text: await fn() }); onChanged(); } catch (e) { setMsg({ ok: false, text: e.message }); }
+    setBusy("");
+  };
+  const save = (e) => { e.preventDefault(); run("save", async () => { const r = await api("/keys/telegram", { method: "PUT", body: { key: token.trim() } }); setToken(""); return t("tg.saved", { bot: r.bot }); }); };
+  const connect = () => run("connect", async () => t("tg.connected", { name: (await api("/keys/telegram/connect", { method: "POST" })).chat_name }));
+  const remove = () => { if (confirm(t("tg.removeConfirm"))) run("remove", async () => { await api("/keys/telegram", { method: "DELETE" }); return t("tg.removed"); }); };
+
+  return (
+    <section className="card">
+      <h2 className="card-title"><span className="num"><Icon name="upload" size={16} /></span>{t("tg.title")}</h2>
+      <p className="muted small">{t("tg.what")}</p>
+      {!saved ? (
+        <form onSubmit={save} className="field">
+          <ol className="tg-steps small">
+            <li>{t("tg.step1")} <a href="https://t.me/BotFather" target="_blank" rel="noreferrer">@BotFather ↗</a></li>
+            <li>{t("tg.step2")}</li>
+          </ol>
+          <div className="input-row">
+            <input type="password" autoComplete="off" spellCheck={false} placeholder="123456789:AA…" value={token} onChange={(e) => setToken(e.target.value)} />
+            <button className="btn primary" disabled={!!busy || token.trim().length < 30}>{busy === "save" ? t("keys.checking") : t("keys.save")}</button>
+          </div>
+        </form>
+      ) : (
+        <>
+          <div className="key-saved">
+            <code>{saved.hint}</code>
+            {chatName ? <span className="pill ok">{t("tg.sendingTo", { name: chatName })}</span> : <span className="pill">{t("tg.notConnected")}</span>}
+            <span className="key-actions">
+              <button type="button" className="btn subtle sm" onClick={remove} disabled={!!busy}>{t("keys.remove")}</button>
+            </span>
+          </div>
+          {!chatName && <p className="hint">{t("tg.step3")}</p>}
+          <div className="row">
+            <button type="button" className={`btn ${chatName ? "secondary" : "primary"} sm`} onClick={connect} disabled={!!busy}>
+              {busy === "connect" ? t("keys.checking") : chatName ? t("tg.reconnect") : t("tg.connect")}
+            </button>
+          </div>
+        </>
+      )}
+      {msg && <p className={`alert ${msg.ok ? "ok" : "bad"}`}>{msg.text}</p>}
+    </section>
+  );
+}
+
 export default function Settings() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -176,6 +227,7 @@ export default function Settings() {
             <AiChoices key={JSON.stringify(data.prefs)} prefs={data.prefs || {}} catalog={data.catalog}
               has={{ openai: !!byId.openai, higgsfield: !!byId.higgsfield }} onSaved={load} />
           )}
+          <TelegramCard saved={byId.telegram} chatName={data.prefs?.telegram_chat_name} onChanged={load} />
           {byId.seedance && (
             <p className="alert info row between">
               <span>{t("keys.legacySeedance")}</span>

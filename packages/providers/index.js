@@ -11,3 +11,4 @@ export * as keys from "./src/keys.js";
 export * as apiErrors from "./src/api-errors.js";
 export * as higgsfield from "./src/higgsfield.js";
 export * as aiCatalog from "./src/ai-catalog.js";
+export * as telegram from "./src/telegram.js";

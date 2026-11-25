@@ -31,6 +31,9 @@ export function cleanPrefs(p = {}) {
   if (VIDEO_PROVIDERS.includes(p.video_provider)) out.video_provider = p.video_provider;
   if (GEMINI_VIDEO[p.gemini_video]) out.gemini_video = p.gemini_video;
   if (HIGGSFIELD_MODELS[p.higgsfield_model]) out.higgsfield_model = p.higgsfield_model;
+  // the Telegram chat finished videos go to (set by "Connect", not by the AI choices form)
+  if (/^-?\d{1,20}$/.test(String(p.telegram_chat_id ?? ""))) out.telegram_chat_id = String(p.telegram_chat_id);
+  if (out.telegram_chat_id && typeof p.telegram_chat_name === "string") out.telegram_chat_name = p.telegram_chat_name.slice(0, 80);
   return out;
 }
 

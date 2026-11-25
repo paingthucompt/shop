@@ -584,3 +584,7 @@ body:has(.auth) { background:
 .ai-using .icon { color: var(--accent); }
 .ai-change { margin-left: auto; font-weight: 600; text-decoration: none; }
 @media (max-width: 720px) { .ai-choices .ai-row, .ai-choices .ai-row.two-sel { grid-template-columns: 1fr; } }
+
+/* Telegram */
+.tg-steps { margin: 4px 0 10px; padding-left: 20px; display: grid; gap: 4px; color: var(--muted); }
+.tg-row { margin-top: 14px; }
