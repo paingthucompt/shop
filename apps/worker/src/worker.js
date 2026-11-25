@@ -7,9 +7,9 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { basename, join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { query, failJob, recordUsage, loadUserKeys } from "@app/db";
-import { seedance, geminiVideo, usage, keys } from "@app/providers";
-import { renderVideo, makePhotoClip, makeSceneClip, normalizeClip, voiceEnabled } from "@app/video-engine";
+import { query, failJob, recordUsage, loadUserKeys, loadUserPrefs } from "@app/db";
+import { seedance, geminiVideo, higgsfield, sceneImages, llm, usage, keys, aiCatalog } from "@app/providers";
+import { renderVideo, makePhotoClip, makeSceneClip, normalizeClip, makePortraitFrame, voiceEnabled } from "@app/video-engine";
 
 const QUEUE_NAME = "video-jobs";
 usage.setUsageSink(recordUsage);
@@ -39,13 +39,34 @@ async function download(url, file) {
   writeFileSync(file, Buffer.from(await res.arrayBuffer()));
 }
 
+/**
+ * The 9:16 frame an image-to-video model starts from. With a Gemini key: a clean AI photo of the product
+ * (no shop-banner text for the model to garble, no blurred bars; ~US$0.07). Otherwise, or if that fails,
+ * the main photo fitted into a blurred 9:16 background. HIGGSFIELD_START_FRAME=photo skips the AI photo.
+ */
+async function startFrame(job, product, photos, work) {
+  if (process.env.HIGGSFIELD_START_FRAME !== "photo" && sceneImages.sceneImagesEnabled()) {
+    try {
+      const prompt = sceneImages.buildStartFramePrompt(await llm.promptProduct(product), { style: job.style || "product", format: product.clip_prompt?.format });
+      const img = await sceneImages.generateSceneImage(prompt, photos.slice(0, 4).map(toDataUrl));
+      writeFileSync(join(work, `start-frame${img.mime === "image/png" ? ".png" : ".jpg"}`), img.data);
+      console.log(`[job ${job.id}] AI start frame (${img.mime}, ${(img.data.length / 1024).toFixed(0)} KB)`);
+      return { data: img.data, mime: img.mime };
+    } catch (err) {
+      console.warn(`[job ${job.id}] AI start frame failed (${err.message.slice(0, 120)}) — using the main photo`);
+    }
+  }
+  const frame = makePortraitFrame({ input: photos[0].path, out: join(work, "start-frame.jpg") });
+  return { data: readFileSync(frame), mime: "image/jpeg" };
+}
+
 async function makeClip(job, product, dir) {
   const clip = join(dir, "clip.mp4");
   if (job.clip_path && existsSync(job.clip_path)) return job.clip_path;
   await setJob(job.id, { status: "running", stage: "clip" });
 
   const mode = ["upload", "scenes", "photos"].includes(job.clip_source) ? job.clip_source
-    : job.clip_source === "ai_video" ? seedance.aiVideoProvider()
+    : job.clip_source === "ai_video" ? seedance.aiVideoProvider(job.ai_provider)
     : seedance.clipMode();
   if (!mode) throw new Error("AI video is not set up (no GEMINI_API_KEY / SEEDANCE_API_KEY)");
   if (mode === "scenes") {
@@ -79,8 +100,10 @@ async function makeClip(job, product, dir) {
   } else if (mode === "gemini") {
     // the interaction id shares the seedance_task_id column, prefixed so it is never polled at the wrong provider
     const saved = job.seedance_task_id?.startsWith("gemini:") ? job.seedance_task_id.slice(7) : null;
-    const bytes = await geminiVideo.generateVideo(product, product.images.map(toDataUrl), {
+    // English name / details only: Thai text in the prompt ends up painted into the clip
+    const bytes = await geminiVideo.generateVideo(saved ? product : await llm.promptProduct(product), product.images.map(toDataUrl), {
       style: job.style || "product",
+      resolution: job.ai_model, // the resolution picked for this video (else the user's / server default)
       resumeId: saved,
       onId: async (id) => {
         await setJob(job.id, { seedance_task_id: `gemini:${id}` });
@@ -89,15 +112,38 @@ async function makeClip(job, product, dir) {
       onStatus: (s) => console.log(`[job ${job.id}] gemini ${s}`),
     });
     writeFileSync(clip, bytes);
-    const g = geminiVideo.geminiSettings();
+    const g = geminiVideo.geminiSettings(job.ai_model);
     usage.reportUsage({ kind: "video", provider: "gemini", model: g.model, seconds: g.duration, resolution: g.resolution });
+  } else if (mode === "higgsfield") {
+    // the main product photo as a 9:16 start frame (the model keeps the frame's aspect) → image-to-video
+    const work = localWorkDir(job.id);
+    mkdirSync(work, { recursive: true });
+    let requestId = job.higgsfield_request_id;
+    if (!requestId) {
+      const photos = (product.images || []).filter((i) => existsSync(i.path));
+      if (!photos.length) throw new Error("product photos are missing on disk");
+      const { data, mime } = await startFrame(job, product, photos, work);
+      requestId = await higgsfield.createRequest(await llm.promptProduct(product), data, { mime, style: job.style || "product", model: job.ai_model, idempotencyKey: `job-${job.id}` });
+      await setJob(job.id, { higgsfield_request_id: requestId });
+      console.log(`[job ${job.id}] higgsfield request ${requestId}`);
+    }
+    const url = await higgsfield.waitForRequest(requestId, { onStatus: (s) => console.log(`[job ${job.id}] higgsfield ${s}`) });
+    const raw = join(work, "higgsfield.mp4");
+    await download(url, raw);
+    // whatever size the model returned → 9:16 720p like every other clip
+    const local = join(work, "clip.mp4");
+    const info = normalizeClip({ input: raw, out: local });
+    console.log(`[job ${job.id}] higgsfield clip ${info.duration.toFixed(1)}s → ${info.width}x${info.height}`);
+    copyFileSync(local, clip);
+    const h = higgsfield.higgsfieldSettings(job.ai_model);
+    usage.reportUsage({ kind: "video", provider: "higgsfield", model: h.model, seconds: h.duration, resolution: h.resolution }); // billed per requested second
   } else if (mode === "sample") {
     console.warn(`[job ${job.id}] CLIP_MODE=sample → using samples/sample-product-clip.mp4`);
     copyFileSync(SAMPLE_CLIP, clip);
   } else {
     let taskId = job.seedance_task_id;
     if (!taskId) {
-      taskId = await seedance.createTask(product, product.images.map(toDataUrl), { style: job.style || "product" });
+      taskId = await seedance.createTask(await llm.promptProduct(product), product.images.map(toDataUrl), { style: job.style || "product" });
       await setJob(job.id, { seedance_task_id: taskId });
       console.log(`[job ${job.id}] seedance task ${taskId}`);
     }
@@ -125,7 +171,7 @@ async function processJob(jobId) {
     const { rows: done } = await query("SELECT 1 FROM videos WHERE job_id = $1 AND lang = $2", [job.id, lang]);
     if (done.length) continue;
     await setJob(job.id, { status: "running", stage: `render:${lang}` });
-    const { rows: [script] } = await query("SELECT hook, lines, captions, cta FROM scripts WHERE product_id = $1 AND lang = $2", [product.id, lang]);
+    const { rows: [script] } = await query("SELECT hook, lines, captions, speakers, cta, format FROM scripts WHERE product_id = $1 AND lang = $2", [product.id, lang]);
     if (!script) throw new Error(`no ${lang} script`);
     // render on local disk, then copy the finished files into storage (see localWorkDir)
     const work = localWorkDir(job.id);
@@ -176,7 +222,7 @@ const worker = new Worker(
       // a job paid with credits always uses the server's keys
       let ctx = {};
       if (j?.own_key) {
-        ctx = keys.userKeyContext(await loadUserKeys(j.user_id));
+        ctx = keys.userKeyContext(await loadUserKeys(j.user_id), aiCatalog.cleanPrefs(await loadUserPrefs(j.user_id)));
         if (!ctx.gemini) throw new Error("your Gemini API key was removed — add it again in Settings, then make the video again");
       }
       await keys.withKeys(ctx, () => usage.withUsage({ userId: j?.user_id, productId: j?.product_id, jobId }, () => processJob(jobId)));

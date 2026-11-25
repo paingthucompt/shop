@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, creditsChanged, LANGS, LANG_FLAG } from "../api.js";
 import { MAX_PHOTOS } from "../PhotoPicker.jsx";
-import { ANGLE_KEYS, STYLE_KEYS, angleName, angleDesc, styleName, styleDesc } from "../options.js";
+import { ANGLE_KEYS, STYLE_KEYS, FORMAT_STYLE, angleName, angleDesc, styleName, styleDesc, formatName } from "../options.js";
+import FormatPicker from "../FormatPicker.jsx";
 import { PHOTO_TYPES, pickPhotos, useFileDrop } from "../useFileDrop.js";
 import { t } from "../i18n.js";
+import Icon from "../icons.jsx";
 
 const VIDEO_TYPES = ["video/mp4", "video/quicktime", "video/webm"];
 
@@ -13,6 +15,8 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private window */ } },
 };
+
+const AI_NAME = { gemini: "Gemini Omni", seedance: "Seedance", higgsfield: "Higgsfield" };
 
 /** rough API price of one AI clip (Gemini Omni / Seedance 2.5, Nov 2026) — shown before spending */
 function aiClipUsd(provider, seconds = 10, resolution = "720p") {
@@ -51,7 +55,7 @@ function Stepper({ steps }) {
     <ol className="stepper">
       {steps.map((s, i) => (
         <li key={s.id} className={s.state}>
-          <a href={`#${s.id}`}><span className="step-num">{s.state === "done" ? "✓" : i + 1}</span><span>{s.title}</span></a>
+          <a href={`#${s.id}`}><span className="step-num">{s.state === "done" ? <Icon name="check" size={15} /> : i + 1}</span><span>{s.title}</span></a>
         </li>
       ))}
     </ol>
@@ -62,46 +66,60 @@ function Stepper({ steps }) {
 
 function ScriptEditor({ productId, lang, script, onSaved }) {
   const [s, setS] = useState(script);
+  const drama = script?.format === "drama";
   const [msg, setMsg] = useState(null);
   useEffect(() => { setS(script); setMsg(null); }, [script]);
   if (!s) return <p className="muted">{t("script.none")}</p>;
   const caps = s.lines.map((_, i) => s.captions?.[i] ?? "");
-  const dirty = JSON.stringify({ ...s, captions: caps }) !== JSON.stringify({ ...script, captions: script.lines.map((_, i) => script.captions?.[i] ?? "") });
+  const spk = s.lines.map((_, i) => (s.speakers?.[i] === "B" ? "B" : "A"));
+  const norm = (x) => ({ ...x, captions: x.lines.map((_, i) => x.captions?.[i] ?? ""), speakers: x.lines.map((_, i) => (x.speakers?.[i] === "B" ? "B" : "A")) });
+  const dirty = JSON.stringify(norm(s)) !== JSON.stringify(norm(script));
 
   // the server drops empty lines together with their caption, so send both arrays as they are
   async function save() {
     setMsg(null);
     try {
-      const r = await api(`/products/${productId}/scripts/${lang}`, { method: "PUT", body: { ...s, captions: caps } });
+      const r = await api(`/products/${productId}/scripts/${lang}`, { method: "PUT", body: { ...s, captions: caps, speakers: spk } });
       onSaved(lang, r);
       setMsg({ ok: true, text: t("common.saved") });
     } catch (e) { setMsg({ ok: false, text: e.message }); }
   }
   const setLine = (i, v) => setS({ ...s, lines: s.lines.map((l, j) => (j === i ? v : l)) });
   const setCaption = (i, v) => setS({ ...s, captions: caps.map((c, j) => (j === i ? v : c)) });
-  const removeLine = (i) => setS({ ...s, lines: s.lines.filter((_, j) => j !== i), captions: caps.filter((_, j) => j !== i) });
+  const setSpeaker = (i, v) => setS({ ...s, speakers: spk.map((x, j) => (j === i ? v : x)) });
+  const removeLine = (i) => setS({ ...s, lines: s.lines.filter((_, j) => j !== i), captions: caps.filter((_, j) => j !== i), speakers: spk.filter((_, j) => j !== i) });
 
   return (
     <div className={`script lang-${lang}`}>
       <div className="beat hook">
-        <span className="beat-tag">{t("script.hookTag")}</span>
+        <span className="beat-tag">{t("script.hookTag")}{drama && <span className="who a">A</span>}</span>
         <label>{t("script.hook")}<input value={s.hook} maxLength={80} onChange={(e) => setS({ ...s, hook: e.target.value })} />
           <span className="hint">{t("script.hookHint")}</span></label>
       </div>
       {s.lines.map((l, i) => (
-        <div key={i} className="beat">
-          <span className="beat-tag">{t("script.lineTag", { n: i + 1 })}</span>
+        <div key={i} className={`beat${drama ? ` speaker-${spk[i].toLowerCase()}` : ""}`}>
+          <span className="beat-tag">{t("script.lineTag", { n: i + 1 })}
+            {drama && (
+              <span className="who-switch" role="group" aria-label={t("format.who")}>
+                {["A", "B"].map((w) => (
+                  <button key={w} type="button" className={`who ${w.toLowerCase()}${spk[i] === w ? " on" : ""}`} aria-pressed={spk[i] === w} onClick={() => setSpeaker(i, w)}>{w}</button>
+                ))}
+              </span>
+            )}
+          </span>
           {s.lines.length > 1 && <button type="button" className="beat-remove" title={t("script.removeLine")} aria-label={t("script.removeLine")} onClick={() => removeLine(i)}>✕</button>}
           <label>{t("script.spoken")}<input value={l} maxLength={160} onChange={(e) => setLine(i, e.target.value)} /></label>
-          <label className="caption">{t("script.caption")}
-            <input value={caps[i]} maxLength={60} placeholder={l} onChange={(e) => setCaption(i, e.target.value)} />
-            {i === 0 && <span className="hint">{t("script.captionHint")}</span>}
-          </label>
+          {!drama && (
+            <label className="caption">{t("script.caption")}
+              <input value={caps[i]} maxLength={60} placeholder={l} onChange={(e) => setCaption(i, e.target.value)} />
+              {i === 0 && <span className="hint">{t("script.captionHint")}</span>}
+            </label>
+          )}
         </div>
       ))}
-      {s.lines.length < 6 && <button type="button" className="btn subtle sm" onClick={() => setS({ ...s, lines: [...s.lines, ""], captions: [...caps, ""] })}>＋ {t("script.addLine")}</button>}
+      {s.lines.length < 6 && <button type="button" className="btn subtle sm" onClick={() => setS({ ...s, lines: [...s.lines, ""], captions: [...caps, ""], speakers: [...spk, spk.at(-1) === "A" ? "B" : "A"] })}><Icon name="plus" size={15} />{t("script.addLine")}</button>}
       <div className="beat cta">
-        <span className="beat-tag">{t("script.ctaTag")}</span>
+        <span className="beat-tag">{t("script.ctaTag")}{drama && <span className="who b">B</span>}</span>
         <label>{t("script.cta")}<input value={s.cta} maxLength={80} onChange={(e) => setS({ ...s, cta: e.target.value })} />
           <span className="hint">{t("script.ctaHint")}</span></label>
       </div>
@@ -247,6 +265,7 @@ function QuotePanel({ quote, busy, speeds, onSpeed, clipVoice, onClipVoice, onCo
   const c = quote.clip;
   const range = quote.voice_speed_range || { min: 0.8, max: 1.5 };
   const usd = c.api_usd ?? (c.mode === "gemini" || c.mode === "seedance" ? aiClipUsd(c.mode, c.duration_s, c.resolution) : 0);
+  const ai = ["gemini", "seedance", "higgsfield"].includes(c.mode);
   const blocked = (clipVoice && quote.langs.length > 1) || !quote.enough_credits || quote.missing_scripts.length > 0 || Object.keys(quote.script_issues || {}).length > 0;
   return (
     <div className="quote">
@@ -255,7 +274,7 @@ function QuotePanel({ quote, busy, speeds, onSpeed, clipVoice, onClipVoice, onCo
         <dt>{t("quote.videos")}</dt><dd>{quote.langs.map((l) => `${LANG_FLAG[l]} ${LANGS[l]}`).join(" + ")}</dd>
         <dt>{t("quote.clip")}</dt><dd>{c.mode === "scenes" ? t("quote.clipScenes", { n: c.scene_count, s: Number(c.duration_s).toFixed(0) })
           : c.mode === "upload" ? t("quote.clipUpload", { s: Number(c.duration_s).toFixed(1) })
-          : c.mode === "seedance" || c.mode === "gemini" ? t("quote.clipAi", { p: c.mode === "gemini" ? "Gemini" : "Seedance", s: c.duration_s, r: c.resolution })
+          : ai ? t("quote.clipAi", { p: c.mode === "higgsfield" ? `Higgsfield · ${c.model_name || c.model}` : AI_NAME[c.mode], s: c.duration_s, r: c.resolution })
           : c.mode === "photos" ? t("quote.clipPhotos", { n: c.reference_images, s: c.duration_s }) : "Sample clip (testing)"}</dd>
         {!["upload", "scenes", "photos"].includes(c.mode) && <><dt>{t("step1.style")}</dt><dd>{styleName(c.style)}</dd></>}
         <dt>{t("quote.voice")}</dt><dd>{clipVoice ? t("quote.voiceClip") : voiceText(quote.voiceover)}</dd>
@@ -274,7 +293,7 @@ function QuotePanel({ quote, busy, speeds, onSpeed, clipVoice, onClipVoice, onCo
           <span className="hint">{t("quote.speedHint")}</span>
         </dd></>}
         <dt>{t("quote.cost")}</dt><dd>{quote.own_key ? (
-            <><strong className="cost">🔑 {t("quote.ownKey")}</strong>
+            <><strong className="cost meta-i"><Icon name="key" size={17} />{t("quote.ownKey")}</strong>
               {usd > 0 && <p className="alert warn">💳 {t("quote.ownKeyCost", { usd: usd.toFixed(2) })}</p>}</>
           ) : (
             <><strong className="cost">{t("quote.credits", { n: quote.cost })}</strong> <span className="muted small">{quote.enough_credits ? t("quote.after", { b: quote.balance, a: quote.balance_after }) : t("quote.notEnough", { b: quote.balance })}</span>
@@ -304,6 +323,9 @@ export default function Product() {
   const [quote, setQuote] = useState(null);
   const [style, setStyle] = useState("product");
   const [angle, setAngle] = useState("auto");
+  const [format, setFormat] = useState("voiceover");
+  // a format suggests the clip look that suits it (the user can still change the look)
+  const chooseFormat = (f) => { setFormat(f); setStyle(FORMAT_STYLE[f] || "product"); };
   const [choice, setChoice] = useState(null); // clip source chosen in step 2 (null = suggested one)
   const [clipNotice, setClipNotice] = useState("");
   const [sceneNotice, setSceneNotice] = useState("");
@@ -314,7 +336,15 @@ export default function Product() {
   const chooseTalking = (v) => { setTalking(v); store.set("flowVoice", v ? "talking" : "silent"); };
   const setSpeed = (l, v) => setSpeeds((cur) => { const next = { ...cur, [l]: v }; store.set("voiceSpeed", { ...store.get("voiceSpeed", {}), ...next }); return next; });
 
-  useEffect(() => { api(`/products/${id}`).then(setP).catch((e) => setError(e.message)); }, [id]);
+  useEffect(() => {
+    api(`/products/${id}`).then((x) => {
+      setP(x);
+      // start from the format the scripts were written in
+      const f = x.scripts?.my?.format || x.scripts?.th?.format;
+      if (f) setFormat(f);
+      if (x.clip_prompt?.style) setStyle(x.clip_prompt.style);
+    }).catch((e) => setError(e.message));
+  }, [id]);
   const selected = Object.keys(langs).filter((l) => langs[l]);
   // a quote is only valid for the choices it was made for
   useEffect(() => setQuote(null), [langs, style, choice]);
@@ -322,7 +352,7 @@ export default function Product() {
   const pick = choice || (p?.clip ? "flow" : scenesReady && p?.features?.scene_images ? "scenes" : "photos");
   const source = pick === "flow" ? "upload" : pick;
 
-  async function generate(opts = { langs: selected, angle, style }) {
+  async function generate(opts = { langs: selected, angle, style, format }) {
     setBusy("scripts"); setError("");
     try {
       const r = await api(`/products/${id}/scripts/generate`, { method: "POST", body: opts });
@@ -341,7 +371,8 @@ export default function Product() {
     setLangs({ th: l.includes("th"), my: l.includes("my") });
     setAngle(auto.angle || "auto");
     setStyle(auto.style || "product");
-    generate({ langs: l, angle: auto.angle || "auto", style: auto.style || "product" });
+    setFormat(auto.format || "voiceover");
+    generate({ langs: l, angle: auto.angle || "auto", style: auto.style || "product", format: auto.format || "voiceover" });
   }, [auto, p]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function getQuote() {
@@ -358,7 +389,7 @@ export default function Product() {
   async function confirmVideo() {
     setBusy("video"); setError("");
     try {
-      const job = await api("/jobs", { method: "POST", body: { product_id: Number(id), langs: quote.langs, style: quote.clip.style, clip_source: quote.clip_source, voice_speed: quote.voiceover !== "none" && !clipVoice ? speeds : undefined, clip_has_voice: quote.clip_source === "upload" && clipVoice, confirm_cost: quote.cost } });
+      const job = await api("/jobs", { method: "POST", body: { product_id: Number(id), langs: quote.langs, style: quote.clip.style, clip_source: quote.clip_source, voice_speed: quote.voiceover !== "none" && !clipVoice ? speeds : undefined, clip_has_voice: quote.clip_source === "upload" && clipVoice, ai_provider: quote.ai_provider || undefined, ai_model: quote.ai_model || undefined, confirm_cost: quote.cost } });
       creditsChanged();
       nav(`/jobs/${job.id}`);
     } catch (e) { setError(e.message); setQuote(null); setBusy(""); }
@@ -441,17 +472,23 @@ export default function Product() {
     pick === "flow" && !p.clip && t("step3.needClip"),
     pick === "scenes" && !scenesReady && t("step3.needScenes"),
   ].filter(Boolean);
+  // AI video: Gemini Omni or Seedance when the user has keys for both (their pick is remembered)
+  // AI video: the service + model chosen in Settings (the server's default for this user)
   const aiProvider = p.features?.ai_video;
+  // Higgsfield: the model picked (remembered), else the first in the list
+  const aiModels = p.features?.ai_models?.[aiProvider] || [];
+  const aiModel = aiModels.find((m) => m.default) || aiModels[0];
+  const aiUsd = (k) => (k === aiProvider && aiModel ? aiModel.usd : p.features?.ai_video_usd?.[k] ?? aiClipUsd(k));
   const choices = [
-    { k: "photos", icon: "📷", badge: t("clip.free"), tone: "ok" },
-    { k: "flow", icon: "🎬", badge: p.clip ? `✓ ${p.clip.seconds.toFixed(0)} s` : t("clip.flowPlan"), tone: p.clip ? "ok" : "" },
-    ...(p.features?.scene_images ? [{ k: "scenes", icon: "🖼", badge: t("clip.perImage"), tone: "warn" }] : []),
-    ...(aiProvider ? [{ k: "ai_video", icon: "✨", badge: `≈ US$${aiClipUsd(aiProvider).toFixed(2)}`, tone: "warn" }] : []),
+    { k: "photos", icon: "camera", badge: t("clip.free"), tone: "ok" },
+    { k: "flow", icon: "upload", badge: p.clip ? `✓ ${p.clip.seconds.toFixed(0)} s` : t("clip.flowPlan"), tone: p.clip ? "ok" : "" },
+    ...(p.features?.scene_images ? [{ k: "scenes", icon: "image", badge: t("clip.perImage"), tone: "warn" }] : []),
+    ...(aiProvider ? [{ k: "ai_video", icon: "sparkles", badge: `≈ US$${aiUsd(aiProvider).toFixed(2)}`, tone: "warn" }] : []),
   ];
 
   return (
     <>
-      <Link to="/" className="back">← {t("nav.products")}</Link>
+      <Link to="/" className="back"><Icon name="back" size={15} />{t("nav.products")}</Link>
       <div className="page-head">
         <div className="product-head">
           {p.images[0]?.url && <img src={p.images[0].url} alt="" />}
@@ -464,7 +501,7 @@ export default function Product() {
             </p>
           </div>
         </div>
-        <button className="btn subtle sm danger" onClick={remove} disabled={!!busy}>{busy === "delete" ? t("product.deleting") : `🗑 ${t("product.delete")}`}</button>
+        <button className="btn subtle sm danger" onClick={remove} disabled={!!busy}>{busy === "delete" ? t("product.deleting") : <><Icon name="trash" size={16} />{t("product.delete")}</>}</button>
       </div>
 
       <details className="card photos-card">
@@ -503,6 +540,7 @@ export default function Product() {
             ))}
           </div>
         </div>
+        <FormatPicker value={format} onChange={chooseFormat} disabled={!!busy} />
         <div className="cols">
           <label>{t("step1.angle")}
             <select value={angle} onChange={(e) => setAngle(e.target.value)} disabled={!!busy}>{ANGLE_KEYS.map((k) => <option key={k} value={k}>{angleName(k)}</option>)}</select>
@@ -516,7 +554,7 @@ export default function Product() {
         <div className="row">
           <button type="button" className={`btn ${hasScripts ? "secondary" : "primary"}`} disabled={!!busy || !selected.length}
             onClick={() => { if (!hasScripts || confirm(t("step1.rewriteConfirm"))) generate(); }}>
-            {busy === "scripts" ? <><span className="spinner" /> {t("step1.writing")}</> : hasScripts ? `↻ ${t("step1.rewrite")}` : `✨ ${t("step1.write")}`}
+            {busy === "scripts" ? <><span className="spinner" /> {t("step1.writing")}</> : hasScripts ? <><Icon name="wand" size={17} />{t("step1.rewrite")}</> : <><Icon name="sparkles" size={17} />{t("step1.write")}</>}
           </button>
           {busy === "scripts" && <span className="hint">{t("step1.writingHint")}</span>}
         </div>
@@ -524,7 +562,9 @@ export default function Product() {
           <div className="two">
             {selected.map((lang) => (
               <div key={lang} className="script-card">
-                <h3>{LANG_FLAG[lang]} {LANGS[lang]}{p.scripts?.[lang]?.angle && p.scripts[lang].angle !== "auto" ? <span className="muted small"> · {angleName(p.scripts[lang].angle)}</span> : null}</h3>
+                <h3>{LANG_FLAG[lang]} {LANGS[lang]}
+                  {p.scripts?.[lang]?.format && p.scripts[lang].format !== "voiceover" && <span className="badge info">{formatName(p.scripts[lang].format)}</span>}
+                  {p.scripts?.[lang]?.angle && p.scripts[lang].angle !== "auto" ? <span className="muted small"> · {angleName(p.scripts[lang].angle)}</span> : null}</h3>
                 <ScriptEditor productId={id} lang={lang} script={p.scripts?.[lang]}
                   onSaved={(l, { clip_prompt: cp, flow_prompts: fp, ...s }) => setP((cur) => ({ ...cur, scripts: { ...cur.scripts, [l]: s }, clip_prompt: cp ?? cur.clip_prompt, flow_prompts: fp ?? cur.flow_prompts }))} />
               </div>
@@ -537,15 +577,22 @@ export default function Product() {
         <div className="choice-grid" role="radiogroup" aria-label={t("step2.title")}>
           {choices.map((c) => (
             <button key={c.k} type="button" role="radio" aria-checked={pick === c.k} className={`choice${pick === c.k ? " on" : ""}`} onClick={() => setChoice(c.k)}>
-              <span className="choice-icon" aria-hidden>{c.icon}</span>
-              <span className="choice-title">{c.k === "ai_video" ? t("clip.ai_video", { p: aiProvider === "gemini" ? "Gemini" : "Seedance" }) : t(`clip.${c.k}`)}</span>
+              <span className="choice-icon" aria-hidden><Icon name={c.icon} size={20} /></span>
+              <span className="choice-title">{c.k === "ai_video" ? t("clip.ai_video", { p: AI_NAME[aiProvider] || aiProvider }) : t(`clip.${c.k}`)}</span>
               <span className="choice-desc">{t(`clip.${c.k}.desc`)}</span>
               <span className={`badge ${c.tone}`}>{c.badge}</span>
             </button>
           ))}
         </div>
         {pick === "photos" && <p className="alert info">{t("clip.photos.more")}</p>}
-        {pick === "ai_video" && <p className="alert warn">💳 {t("clip.ai_video.more", { usd: aiClipUsd(aiProvider).toFixed(2), style: styleName(style) })}</p>}
+        {pick === "ai_video" && (
+          <p className="ai-using">
+            <Icon name="sparkles" size={16} />
+            <span>{t("clip.aiUsing")} <strong>{AI_NAME[aiProvider] || aiProvider}{aiModel && aiProvider === "higgsfield" ? ` · ${aiModel.name}` : aiModel ? ` · ${aiModel.id}` : ""}</strong></span>
+            <Link to="/settings" className="ai-change">{t("clip.aiChange")} →</Link>
+          </p>
+        )}
+        {pick === "ai_video" && <p className="alert warn meta-i"><Icon name="dollar" size={16} />{t("clip.ai_video.more", { usd: aiUsd(aiProvider).toFixed(2), style: styleName(style) })}</p>}
         {pick === "flow" && <FlowPanel prompts={p.flow_prompts} talking={talking} onTalking={chooseTalking} clip={p.clip} busy={busy === "clip"} onUpload={uploadClip} onRemove={removeClip} notice={clipNotice} />}
         {pick === "scenes" && (p.clip_prompt
           ? <ScenesPanel scenes={p.scenes} scripts={p.scripts} busy={busy} onMake={makeScenes} onRedo={redoScene} notice={sceneNotice} />
@@ -559,7 +606,7 @@ export default function Product() {
           <>
             {blockers.length > 0 && <ul className="blockers">{blockers.map((b) => <li key={b}>{b}</li>)}</ul>}
             <button type="button" className="btn primary lg" onClick={getQuote} disabled={!!busy || blockers.length > 0}>
-              {busy === "quote" ? t("step3.checking") : `🎬 ${t("step3.button", { n: selected.length })}`}
+              {busy === "quote" ? t("step3.checking") : <><Icon name="film" size={18} />{t("step3.button", { n: selected.length })}</>}
             </button>
             <p className="hint">{t("step3.free")}</p>
           </>

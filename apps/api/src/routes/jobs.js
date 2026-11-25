@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { query, tx, changeCredits, failJob } from "@app/db";
-import { seedance, pricing, keys } from "@app/providers";
+import { seedance, higgsfield, pricing, sceneImages, keys, aiCatalog } from "@app/providers";
 import { ah, requireAuth, withUserKeys, videoQueue, mediaUrl } from "../lib.js";
-import { parseClipSource, parseId, parseLangs, parseStyle, parseVoiceSpeed, publicError, publicErrorCode, VOICE_SPEED } from "../validate.js";
+import { parseAiProvider, parseClipSource, parseId, parseLangs, parseStyle, parseVoiceSpeed, publicError, publicErrorCode, VOICE_SPEED } from "../validate.js";
 import { foreignScriptIssue } from "../script-rules.js";
 
 const r = Router();
@@ -45,7 +45,16 @@ function voiceoverLabel(langs) {
 }
 
 /** everything a user must see before spending: credits, what Seedance will be asked, output settings */
-async function buildQuote(userId, productId, langs, style = "product", clipSource = "auto") {
+/** the model picked for one AI video: a Higgsfield model path or a Gemini Omni resolution; "" → default */
+function parseAiModel(value) {
+  if (value === undefined || value === null || value === "") return null;
+  if (!higgsfield.MODELS[value] && !aiCatalog.GEMINI_VIDEO[value]) {
+    throw Object.assign(new Error(`ai_model must be one of: ${[...Object.keys(aiCatalog.GEMINI_VIDEO), ...Object.keys(higgsfield.MODELS)].join(", ")}`), { status: 400 });
+  }
+  return value;
+}
+
+async function buildQuote(userId, productId, langs, style = "product", clipSource = "auto", aiChoice = null, aiModel = null) {
   const { rows: [product] } = await query("SELECT * FROM products WHERE id = $1 AND user_id = $2", [productId, userId]);
   if (!product) return { status: 404, error: "product not found" };
   if (keys.keyMissing()) return { status: 400, error: "add your own Gemini API key in Settings first", code: "need_key" };
@@ -60,7 +69,7 @@ async function buildQuote(userId, productId, langs, style = "product", clipSourc
   );
   // "auto" follows CLIP_MODE; the explicit choices map onto the same clip modes
   if (clipSource === "auto") clipSource = { photos: "photos", gemini: "ai_video", seedance: "ai_video" }[seedance.clipMode()] || "auto";
-  const aiProvider = seedance.aiVideoProvider();
+  const aiProvider = seedance.aiVideoProvider(aiChoice);
   if (clipSource === "ai_video" && !aiProvider) return { status: 400, error: "AI video is not set up (GEMINI_API_KEY or SEEDANCE_API_KEY)" };
   const upload = clipSource === "upload";
   const scenes = clipSource === "scenes";
@@ -77,7 +86,9 @@ async function buildQuote(userId, productId, langs, style = "product", clipSourc
     ? { mode: "upload", model: null, duration: Number(product.clip_seconds), resolution: "720p" }
     : scenes
       ? { mode: "scenes", model: null, duration: sceneList.reduce((a, s) => a + Number(s.seconds), 0), resolution: "720p", scene_count: sceneList.length }
-      : seedance.clipSettings(clipSource === "ai_video" ? aiProvider : clipSource === "photos" ? "photos" : undefined);
+      : seedance.clipSettings(clipSource === "ai_video" ? aiProvider : clipSource === "photos" ? "photos" : undefined,
+        // a model only counts for the service it belongs to (a Gemini resolution never goes to Higgsfield)
+        { model: aiProvider === "higgsfield" ? (higgsfield.MODELS[aiModel] ? aiModel : null) : (aiCatalog.GEMINI_VIDEO[aiModel] ? aiModel : null) });
   const balance = user?.credits ?? 0;
   return {
     product_id: productId,
@@ -90,19 +101,26 @@ async function buildQuote(userId, productId, langs, style = "product", clipSourc
     missing_scripts: missing,
     script_issues: scriptIssues,
     clip_source: clipSource,
+    // the AI video services this user can pick from (the quote is for ai_provider)
+    ai_provider: clipSource === "ai_video" ? aiProvider : null,
+    // stored with the job: the Higgsfield model path, or the Gemini Omni resolution
+    ai_model: clipSource !== "ai_video" ? null : aiProvider === "higgsfield" ? clip.model : aiProvider === "gemini" ? clip.resolution : null,
+    ai_providers: seedance.aiVideoProviders(),
     clip: {
       mode: clip.mode,
       // style only changes the AI video prompt (Seedance / Gemini); the free photo clip has no people
       style,
-      style_applies: clip.mode === "seedance" || clip.mode === "gemini",
+      style_applies: ["seedance", "gemini", "higgsfield"].includes(clip.mode),
       model: clip.model,
+      model_name: clip.name || null,
       duration_s: clip.duration,
       resolution: clip.resolution,
       reference_images: Math.min(4, (product.images || []).length),
       scene_count: clip.scene_count,
       // US$ the AI clip will cost on the provider bill (same price table as the cost tracking)
-      api_usd: clip.mode === "seedance" || clip.mode === "gemini"
-        ? pricing.estimateClipUsd({ provider: clip.mode, model: clip.model, seconds: clip.duration, resolution: clip.resolution }) : 0,
+      api_usd: ["seedance", "gemini", "higgsfield"].includes(clip.mode)
+        ? Math.round((pricing.estimateClipUsd({ provider: clip.mode, model: clip.model, seconds: clip.duration, resolution: clip.resolution })
+          + (clip.mode === "higgsfield" ? sceneImages.startFrameUsd() : 0)) * 1e4) / 1e4 : 0,
       prompt: seedance.buildProductPrompt(product, { style }),
     },
     voiceover: voiceoverLabel(langs),
@@ -114,7 +132,7 @@ async function buildQuote(userId, productId, langs, style = "product", clipSourc
 
 /** GET /api/jobs/quote?product_id=1&langs=th,my — free preview, nothing is charged */
 r.get("/quote", ah(async (req, res) => {
-  const q = await buildQuote(req.userId, parseId(req.query.product_id, "product_id"), parseLangs(req.query.langs), parseStyle(req.query.style), parseClipSource(req.query.clip_source));
+  const q = await buildQuote(req.userId, parseId(req.query.product_id, "product_id"), parseLangs(req.query.langs), parseStyle(req.query.style), parseClipSource(req.query.clip_source), parseAiProvider(req.query.ai_provider), parseAiModel(req.query.ai_model));
   if (q.error) return res.status(q.status).json({ error: q.error, code: q.code });
   res.json(q);
 }));
@@ -132,7 +150,7 @@ r.post("/", ah(async (req, res) => {
   const clipSource = parseClipSource(req.body.clip_source);
   const voiceSpeed = parseVoiceSpeed(req.body.voice_speed, langs);
   const clipHasVoice = req.body.clip_has_voice === true;
-  const q = await buildQuote(req.userId, productId, langs, style, clipSource);
+  const q = await buildQuote(req.userId, productId, langs, style, clipSource, parseAiProvider(req.body.ai_provider), parseAiModel(req.body.ai_model));
   if (q.error) return res.status(q.status).json({ error: q.error, code: q.code });
   if (q.missing_scripts.length) return res.status(400).json({ error: `write the script first for: ${q.missing_scripts.join(", ")}` });
   const issues = Object.values(q.script_issues);
@@ -146,8 +164,8 @@ r.post("/", ah(async (req, res) => {
 
   const job = await tx(async (c) => {
     const { rows } = await c.query(
-      "INSERT INTO video_jobs (user_id, product_id, langs, credits_charged, style, clip_source, voice_speed, clip_has_voice, own_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",
-      [req.userId, productId, langs, q.cost, style, q.clip_source, clipHasVoice ? null : voiceSpeed && JSON.stringify(voiceSpeed), clipHasVoice, q.own_key], // the source the user was quoted for
+      "INSERT INTO video_jobs (user_id, product_id, langs, credits_charged, style, clip_source, voice_speed, clip_has_voice, own_key, ai_provider, ai_model) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *",
+      [req.userId, productId, langs, q.cost, style, q.clip_source, clipHasVoice ? null : voiceSpeed && JSON.stringify(voiceSpeed), clipHasVoice, q.own_key, q.ai_provider, q.ai_model], // the source the user was quoted for
     );
     if (q.cost > 0) await changeCredits(c, req.userId, -q.cost, "job", String(rows[0].id));
     return rows[0];

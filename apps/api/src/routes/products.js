@@ -6,10 +6,10 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import crypto from "node:crypto";
 import { query, tx, changeCredits } from "@app/db";
-import { llm, shopee, seedance, flowPrompt, sceneImages, productLink, usage, keys, apiErrors } from "@app/providers";
+import { llm, shopee, seedance, higgsfield, geminiVideo, aiCatalog, flowPrompt, sceneImages, productLink, usage, keys, apiErrors, pricing } from "@app/providers";
 import { probeClip } from "@app/video-engine";
 import { ah, requireAuth, withUserKeys, requireKey, STORAGE_DIR, mediaUrl } from "../lib.js";
-import { httpError, parseId, parseLangs, parseAngle, parseStyle, isShopeeUrl, publicError } from "../validate.js";
+import { httpError, parseId, parseLangs, parseAngle, parseStyle, parseFormat, isShopeeUrl, publicError } from "../validate.js";
 import { validateScript, clampScript } from "../script-rules.js";
 
 const r = Router();
@@ -131,7 +131,13 @@ function parseProductForm(b) {
 }
 
 r.get("/", ah(async (req, res) => {
-  const { rows } = await query("SELECT * FROM products WHERE user_id = $1 ORDER BY created_at DESC LIMIT 200", [req.userId]);
+  // the list cards show how far each product is: which scripts exist, how many videos, the latest job
+  const { rows } = await query(
+    `SELECT p.*,
+            COALESCE((SELECT array_agg(s.lang ORDER BY s.lang) FROM scripts s WHERE s.product_id = p.id), '{}') AS script_langs,
+            (SELECT count(*) FROM videos v JOIN video_jobs j ON j.id = v.job_id WHERE j.product_id = p.id)::int AS video_count,
+            (SELECT j.status FROM video_jobs j WHERE j.product_id = p.id ORDER BY j.created_at DESC LIMIT 1) AS last_status
+     FROM products p WHERE p.user_id = $1 ORDER BY p.created_at DESC LIMIT 200`, [req.userId]);
   res.json(rows.map(present));
 }));
 
@@ -177,11 +183,39 @@ r.post("/", upload.array("images", 4), ah(async (req, res) => {
   }
 }));
 
+/** [{ id, name, seconds, usd, default }] for one AI video service (Gemini: resolutions, Higgsfield: models) */
+function videoModels(service) {
+  const own = keys.usingOwnKeys();
+  if (service === "gemini") {
+    const def = geminiVideo.geminiSettings().resolution;
+    return (own ? Object.keys(aiCatalog.GEMINI_VIDEO) : [def]).map((id) => {
+      const c = geminiVideo.geminiSettings(id);
+      return { id, name: aiCatalog.GEMINI_VIDEO[id], seconds: c.duration, default: id === def, usd: pricing.estimateClipUsd({ provider: "gemini", model: c.model, seconds: c.duration, resolution: id }) };
+    });
+  }
+  const def = higgsfield.higgsfieldSettings().model;
+  return Object.keys(higgsfield.MODELS).map((id) => {
+    const c = higgsfield.higgsfieldSettings(id);
+    return { id, name: c.name, seconds: c.duration, default: id === def, usd: pricing.estimateClipUsd({ provider: "higgsfield", model: id, seconds: c.duration, resolution: c.resolution }) + sceneImages.startFrameUsd() };
+  });
+}
+
 r.get("/:id", ah(async (req, res) => {
   const p = await ownProduct(req.userId, req.params.id);
-  const { rows: scripts } = await query("SELECT lang, hook, lines, captions, cta, angle, updated_at FROM scripts WHERE product_id = $1", [p.id]);
+  const { rows: scripts } = await query("SELECT lang, hook, lines, captions, speakers, cta, angle, format, updated_at FROM scripts WHERE product_id = $1", [p.id]);
   const byLang = Object.fromEntries(scripts.map((s) => [s.lang, s]));
-  res.json({ ...present(p), scripts: byLang, flow_prompts: flowPromptsOf(p, p.clip_prompt, byLang), features: { scene_images: scenesOn(), ai_video: seedance.aiVideoProvider() } });
+  res.json({ ...present(p), scripts: byLang, flow_prompts: flowPromptsOf(p, p.clip_prompt, byLang), features: {
+    scene_images: scenesOn(), ai_video: seedance.aiVideoProvider(), ai_videos: seedance.aiVideoProviders(),
+    // US$ of one AI clip per service (same price table as the quote and cost tracking)
+    ai_video_usd: Object.fromEntries(seedance.aiVideoProviders().map((m) => {
+      const c = seedance.clipSettings(m);
+      const frame = m === "higgsfield" ? sceneImages.startFrameUsd() : 0; // the AI start frame
+      return [m, pricing.estimateClipUsd({ provider: m, model: c.model, seconds: c.duration, resolution: c.resolution }) + frame];
+    })),
+    // the models to pick from per AI video service, with the US$ of one clip; default = the user's choice.
+    // Only users on their own keys pick (server-key videos cost flat credits → the server's model)
+    ai_models: Object.fromEntries(seedance.aiVideoProviders().filter((m) => m !== "seedance").map((m) => [m, videoModels(m)])),
+  } });
 }));
 
 const MAX_IMAGES = 4;
@@ -244,20 +278,22 @@ r.delete("/:id", ah(async (req, res) => {
   res.status(204).end();
 }));
 
-/** angle: set when the AI writes the script; null (a user edit) keeps the stored one */
-const saveScript = (productId, lang, s, angle = null) => query(
-  `INSERT INTO scripts (product_id, lang, hook, lines, captions, cta, angle) VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,'auto'))
+/** angle / format: set when the AI writes the script; null (a user edit) keeps the stored ones */
+const saveScript = (productId, lang, s, angle = null, format = null) => query(
+  `INSERT INTO scripts (product_id, lang, hook, lines, captions, speakers, cta, angle, format)
+   VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8,'auto'),COALESCE($9,'voiceover'))
    ON CONFLICT (product_id, lang) DO UPDATE SET hook = EXCLUDED.hook, lines = EXCLUDED.lines,
-     captions = EXCLUDED.captions, cta = EXCLUDED.cta, angle = COALESCE($7, scripts.angle), updated_at = now()
-   RETURNING lang, hook, lines, captions, cta, angle, updated_at`,
-  [productId, lang, s.hook, JSON.stringify(s.lines), JSON.stringify(s.captions || []), s.cta, angle],
+     captions = EXCLUDED.captions, speakers = EXCLUDED.speakers, cta = EXCLUDED.cta,
+     angle = COALESCE($8, scripts.angle), format = COALESCE($9, scripts.format), updated_at = now()
+   RETURNING lang, hook, lines, captions, speakers, cta, angle, format, updated_at`,
+  [productId, lang, s.hook, JSON.stringify(s.lines), JSON.stringify(s.captions || []), JSON.stringify(s.speakers || []), s.cta, angle, format],
 ).then((r) => r.rows[0]);
 
 const saveClipPrompt = (productId, cp) => query(
   "UPDATE products SET clip_prompt = $2 WHERE id = $1 RETURNING clip_prompt", [productId, JSON.stringify(cp)],
 ).then((r) => r.rows[0]?.clip_prompt ?? null);
 
-const scriptsOf = (productId) => query("SELECT lang, hook, lines, captions, cta FROM scripts WHERE product_id = $1", [productId])
+const scriptsOf = (productId) => query("SELECT lang, hook, lines, captions, speakers, cta, format FROM scripts WHERE product_id = $1", [productId])
   .then((r) => Object.fromEntries(r.rows.map((s) => [s.lang, s])));
 
 /**
@@ -285,7 +321,7 @@ const scenesOn = () => /^(on|1|true|yes)$/i.test(process.env.SCENE_IMAGES || "")
 /**
  * AI-write one script per language (in parallel), then ONE Google Flow prompt for the silent product
  * clip both languages share (its shots follow the script). A failing prompt never loses the scripts.
- * body: { langs: ["th","my"], angle?: "auto"|"problem_solution"|…, style?: one of CLIP_STYLES }
+ * body: { langs: ["th","my"], angle?: "auto"|"problem_solution"|…, style?: one of CLIP_STYLES, format?: voiceover|presenter|drama|montage }
  * → { scripts: { th, my }, clip_prompt: { style, seconds, shots, prompt, mock } }
  */
 r.post("/:id/scripts/generate", aiLimiter, ah(async (req, res) => {
@@ -294,9 +330,10 @@ r.post("/:id/scripts/generate", aiLimiter, ah(async (req, res) => {
   const langs = parseLangs(req.body.langs);
   const angle = parseAngle(req.body.angle);
   const style = parseStyle(req.body.style);
+  const format = parseFormat(req.body.format);
   const seconds = seedance.clipSettings().duration;
   const entries = await Promise.all(langs.map(async (lang) => {
-    const s = await llm.generateScript(p, lang, { seconds, angle }).catch((e) => {
+    const s = await llm.generateScript(p, lang, { seconds, angle, format }).catch((e) => {
       if (e.status) throw e; // a script problem the user can act on
       console.error(`[scripts] ${lang}: ${e.message}`);
       // the API key / its project is the problem (common with users' own keys) → say what to fix
@@ -304,16 +341,16 @@ r.post("/:id/scripts/generate", aiLimiter, ah(async (req, res) => {
       if (apiErrors.isKeyProblem(code)) throw Object.assign(httpError(400, publicError(e.message)), { code, expose: true });
       throw Object.assign(httpError(503, "the AI writer is busy or unreachable — try again in a minute"), { expose: true });
     });
-    return [lang, { ...(await saveScript(p.id, lang, clampScript(s), angle)), mock: !!s.mock }];
+    return [lang, { ...(await saveScript(p.id, lang, clampScript(s), angle, format)), mock: !!s.mock }];
   }));
   const scripts = await scriptsOf(p.id); // all languages, so the clip is long enough for each voiceover
   let cp;
   try {
-    cp = await llm.generateClipPrompt(p, { style, scripts });
+    cp = await llm.generateClipPrompt(p, { style, scripts, format });
   } catch (err) {
     console.warn(`clip prompt for product ${p.id} failed: ${err.message}`);
     const secs = flowPrompt.clipSeconds(scripts);
-    cp = { style, seconds: secs, shots: null, mock: true, prompt: flowPrompt.buildClipPrompt(p, { style, seconds: secs }) };
+    cp = { style, format, seconds: secs, shots: null, mock: true, prompt: flowPrompt.buildClipPrompt(p, { style, seconds: secs }) };
   }
   const clipPrompt = await saveClipPrompt(p.id, cp);
   res.json({ scripts: Object.fromEntries(entries), clip_prompt: clipPrompt, flow_prompts: flowPromptsOf(p, clipPrompt, scripts) });
@@ -379,7 +416,7 @@ const toDataUrl = (img) => readFile(img.path).then((b) => `data:${img.mime || "i
 const IMG_EXT_OF = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp" };
 
 async function makeScene(p, refs, scene) {
-  const prompt = sceneImages.buildScenePrompt(p, { style: p.clip_prompt?.style, visual: scene.visual, role: scene.role });
+  const prompt = sceneImages.buildScenePrompt(p, { style: p.clip_prompt?.style, format: p.clip_prompt?.format, visual: scene.visual, role: scene.role });
   const img = await sceneImages.generateSceneImage(prompt, refs);
   const dir = join(STORAGE_DIR, "scenes", String(p.id));
   mkdirSync(dir, { recursive: true });

@@ -29,6 +29,14 @@ const AUDIO_TOKENS_PER_SECOND = 25;
 const VIDEO = {
   "gemini-omni-1.2-flash": { "360p": 0.0232, "720p": 0.0695, "1080p": 0.1043 },
   seedance: { "480p": 0.103, "720p": 0.231 },
+  // Higgsfield (open.higgsfield.ai/pricing, 2026-11-25), keyed by model path. Kling 2.5 Turbo Pro isn't on
+  // that page: ≈ US$0.07/s is what other hosts charge for it — check the first bill and correct with PRICES_JSON.
+  "kling-video/v2.5-turbo/pro/image-to-video": { "720p": 0.07 },
+  "kling-video/v4.0-flash/image-to-video": { "720p": 0.063 },
+  "kling-video/v4.0/image-to-video": { "720p": 0.126 },
+  "bytedance/seedance-2.5/image-to-video": { "720p": 0.118 },
+  "bytedance/seedance-2.0/image-to-video": { "720p": 0.08 },
+  "alibaba/wan-3.0/image-to-video": { "720p": 0.038 },
 };
 
 /** image generation, per image */

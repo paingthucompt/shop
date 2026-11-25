@@ -65,16 +65,28 @@ export function buildClipPrompt(product, { style = "product", seconds = 10, shot
 }
 
 /** LLM request: one timed shot list for the clip that follows the beats of the script */
-export function buildShotRequest(product, { style = "product", seconds = 10, script } = {}) {
+/** how the shots follow the script format (see FORMAT_GUIDE in llm.js) */
+const FORMAT_SHOTS = {
+  voiceover: "",
+  presenter: "Format: a talking presenter. One local creator, facing the camera, holds and shows the product in most shots; mid shots and close-ups of their hands using it. They are talking (mouth moving naturally), but no audio is generated.",
+  drama: "Format: a mini drama between two local friends, A (has the problem) and B (recommends the product). Show them reacting to each other in a real everyday place: A's problem first, then B handing over or showing the product, then A happily using it. Natural acting, no exaggerated transformations.",
+  montage: "Format: a fast graphic montage. Short dynamic product shots of 1–2 seconds each (hero angle, details, in use, texture), quick cuts, clean backgrounds that leave room for big text. No people talking.",
+};
+
+export function buildShotRequest(product, { style = "product", seconds = 10, script, format = "voiceover" } = {}) {
   const beats = beatsOf(script);
   return [
     `You plan the shots of a ${seconds}-second vertical 9:16 TikTok Shop / Shopee product clip made in Google Flow from the attached product photos.`,
     `A voiceover is added later; the clip must show what it says, in this order (it may be in Thai or Burmese — read it, never copy it):`,
-    ...beats.map((b, i) => `- ${i === 0 ? "hook" : i === beats.length - 1 ? "call to action" : `line ${i}`}: ${b}`),
+    ...beats.map((b, i) => {
+      const who = format !== "drama" ? "" : i === 0 ? " (A)" : i === beats.length - 1 ? " (B)" : ` (${script?.speakers?.[i - 1] || "A"})`;
+      return `- ${i === 0 ? "hook" : i === beats.length - 1 ? "call to action" : `line ${i}`}${who}: ${b}`;
+    }),
     ``,
     `Setting and camera style: ${styleLook(style)}`,
-    `Write ONE shot list in English with timings that add up to ${seconds} seconds (e.g. "0–3s: …"), 3–5 shots, max 90 words, with real actions that suit this product and how it is used.`,
-    `The first second shows the whole product clearly; the last shot ends on the product fully visible. Only show what the product details support. Nobody speaks. No on-screen text.`,
+    FORMAT_SHOTS[format] || "",
+    `Write ONE shot list in English with timings that add up to ${seconds} seconds (e.g. "0–3s: …"), ${format === "montage" ? "5–8" : "3–5"} shots, max 90 words, with real actions that suit this product and how it is used.`,
+    `The first second shows the whole product clearly; the last shot ends on the product fully visible. Only show what the product details support. ${format === "presenter" || format === "drama" ? "The voices are added later (no audio)." : "Nobody speaks."} No on-screen text.`,
     ``,
     `Product: ${product.title}`,
     product.description ? `Details: ${String(product.description).slice(0, 1500)}` : "",

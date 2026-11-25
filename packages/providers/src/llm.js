@@ -28,8 +28,23 @@ const ANGLE_GUIDE = {
 
 export const SCRIPT_ANGLES = Object.keys(ANGLE_GUIDE);
 
-export function buildScriptPrompt(product, lang, seconds = 10, angle = "auto") {
-  const maxLines = seconds <= 10 ? 3 : 4;
+/**
+ * Script format = what kind of video the script is for; the video is then made to match it
+ * (voices, captions, shots). The angle above still decides how it sells.
+ */
+const FORMAT_GUIDE = {
+  voiceover: "",
+  presenter: `Format: TALKING PRESENTER. One local creator holds the product and talks straight to the camera, first person ("I", "you"), like a friend recommending it face to face. Every line is something they say while showing or using the product — natural spoken sentences, no stage directions.`,
+  drama: `Format: MINI DRAMA. A tiny realistic skit between two people: A (a friend with an everyday problem) and B (a friend who recommends the product). The hook is A's first line (the problem, said naturally). The lines are their dialogue, alternating A and B, ending with B showing the product working. The cta is said by B. Spoken dialogue only — no narrator, no stage directions, no names in the text.`,
+  montage: `Format: GRAPHIC MONTAGE. Fast product montage with big bold text on screen. The hook is a short punchy headline. Each line is a VERY short punchy phrase of 2–6 words (a benefit or a spec) that is shown big on screen and also spoken; its caption is the same phrase or a shorter version (max 4 words). No full sentences, no filler words.`,
+};
+
+export const SCRIPT_FORMATS = Object.keys(FORMAT_GUIDE);
+
+export function buildScriptPrompt(product, lang, seconds = 10, angle = "auto", format = "voiceover") {
+  // a montage cuts faster: more, shorter lines; a drama needs a few lines for the back-and-forth
+  const maxLines = format === "montage" ? (seconds <= 10 ? 4 : 5) : format === "drama" ? 4 : seconds <= 10 ? 3 : 4;
+  const drama = format === "drama";
   return [
     `You write voiceover scripts for short vertical TikTok Shop / Shopee affiliate videos.`,
     `Write ONLY in ${LANG_NAME[lang]}. Natural spoken style a real local creator would use — not a translation, no English sentences.`,
@@ -39,17 +54,26 @@ export function buildScriptPrompt(product, lang, seconds = 10, angle = "auto") {
     product.description ? `Details: ${product.description}` : "",
     product.price ? `Price: ${product.price} ${product.currency || "THB"}` : "",
     ``,
+    FORMAT_GUIDE[format] || "",
     ANGLE_GUIDE[angle] || "",
     ``,
     `Rules:`,
     `- Only claim what the product details support. No medical claims, no "best in the world", no fake discounts.`,
     `- The product name / details may be in another language (e.g. Thai): never copy any of its letters, not even single vowels or tone marks — translate the meaning into ${LANG_NAME[lang]} (e.g. "fridge", "litres" written in ${LANG_NAME[lang]} letters). Brand names and model numbers in Latin letters and digits are fine.`,
     `- hook: max 8 words, stops the scroll (problem, surprise or result). It is SPOKEN first, at 0 seconds, and counts toward the time limit — lead with the benefit, never "hello everyone".`,
-    `- lines: ${maxLines - 1}–${maxLines} short sentences describing what the viewer sees and why it is good.`,
-    `- captions: one on-screen key phrase per line (2–5 words, max 30 characters), same order as lines. It is NOT the spoken sentence — it is the selling point at a glance for muted viewers (e.g. a spec, a benefit, a number).`,
-    `- cta: ${CTA_HINT[lang]}.`,
+    drama
+      ? `- lines: ${maxLines - 1}–${maxLines} short lines of dialogue that continue AFTER the hook (never repeat the hook), alternating speakers and starting with B's answer; speakers: "A" or "B" for each line, same order. A only knows the problem — B is the one who explains the product.`
+      : format === "montage"
+        ? `- lines: ${maxLines - 1}–${maxLines} punchy phrases (2–6 words each).`
+        : `- lines: ${maxLines - 1}–${maxLines} short sentences describing what the viewer sees and why it is good.`,
+    drama
+      ? `- captions: leave every caption "" (the spoken dialogue is shown as subtitles).`
+      : `- captions: one on-screen key phrase per line (2–5 words, max 30 characters), same order as lines. It is NOT the spoken sentence — it is the selling point at a glance for muted viewers (e.g. a spec, a benefit, a number).`,
+    `- cta: ${CTA_HINT[lang]}${drama ? " (said by B, naturally, to A and the viewer)" : ""}.`,
     ``,
-    `Return ONLY JSON: {"hook": "...", "lines": ["...", "..."], "captions": ["...", "..."], "cta": "..."}`,
+    drama
+      ? `Return ONLY JSON: {"hook": "...", "lines": ["...", "..."], "speakers": ["B", "A"], "captions": ["", ""], "cta": "..."}`
+      : `Return ONLY JSON: {"hook": "...", "lines": ["...", "..."], "captions": ["...", "..."], "cta": "..."}`,
   ].filter((l) => l !== "").join("\n");
 }
 
@@ -60,10 +84,18 @@ export function parseScript(text) {
   if (typeof j.hook !== "string" || !Array.isArray(j.lines) || typeof j.cta !== "string") {
     throw new Error("LLM JSON missing hook/lines/cta");
   }
-  // keep captions aligned with lines: drop a caption together with its empty line; missing → ""
+  // keep captions / speakers aligned with lines: drop them together with an empty line; missing → "" / A
   const caps = Array.isArray(j.captions) ? j.captions : [];
-  const pairs = j.lines.map((s, i) => [String(s).trim(), String(caps[i] ?? "").trim()]).filter(([l]) => l);
-  return { hook: j.hook.trim(), lines: pairs.map(([l]) => l), captions: pairs.map(([, c]) => c), cta: j.cta.trim() };
+  const spk = Array.isArray(j.speakers) ? j.speakers : [];
+  const rows = j.lines.map((s, i) => [String(s).trim(), String(caps[i] ?? "").trim(), String(spk[i] ?? "").trim().toUpperCase() === "B" ? "B" : "A"])
+    .filter(([l]) => l);
+  // models sometimes repeat the hook as the first line — it would then be spoken twice
+  const same = (a, b) => a.replace(/[\s.!?…။၊,]+/g, "") === b.replace(/[\s.!?…။၊,]+/g, "");
+  if (rows.length > 1 && same(rows[0][0], j.hook.trim())) rows.shift();
+  return {
+    hook: j.hook.trim(), lines: rows.map(([l]) => l), captions: rows.map(([, c]) => c),
+    ...(spk.length ? { speakers: rows.map(([, , s]) => s) } : {}), cta: j.cta.trim(),
+  };
 }
 
 const SCRIPT_RE = { th: /[฀-๿]/, my: /[က-႟ꧠ-꧿ꩠ-ꩿ]/ };
@@ -200,6 +232,7 @@ export const hasForeignText = (product, lang) => {
 export async function englishProduct(product) {
   const reply = await chat([
     `Translate this e-commerce product name and details into plain, short English. Keep brand names, model numbers, sizes and numbers exactly. Do not add anything.`,
+    `Keep only what describes the product itself (what it is, features, specs, what is included) — drop shop greetings, shipping, payment, return and promotion text.`,
     `Name: ${product.title}`,
     product.description ? `Details: ${String(product.description).slice(0, 1500)}` : "",
     `Return ONLY JSON: {"title": "...", "description": "..."}`,
@@ -210,6 +243,21 @@ export async function englishProduct(product) {
   const clean = (x) => Object.values(SCRIPT_RE).some((re) => re.test(x)) ? "" : String(x || "").trim();
   if (!clean(j.title)) throw new Error("translation still in Thai / Burmese");
   return { ...product, title: clean(j.title), description: clean(j.description) || null };
+}
+
+/**
+ * The product as AI video / image prompts should see it: English only. A Thai or Burmese name and shop
+ * description in the prompt make video models paint that text into the clip (seen with Seedance 2.5:
+ * Thai captions inside a Burmese video). Fallback without the LLM: the Latin words of the title only.
+ */
+export async function promptProduct(product) {
+  const text = `${product.title || ""} ${product.description || ""}`;
+  if (!Object.values(SCRIPT_RE).some((re) => re.test(text))) return product;
+  if (llmEnabled()) {
+    try { return await englishProduct(product); } catch (e) { console.warn(`[llm] prompt translation failed (${e.message})`); }
+  }
+  const latin = String(product.title || "").replace(/[^\p{Script=Latin}\d\s.,/+%-]/gu, " ").replace(/\s+/g, " ").trim();
+  return { ...product, title: latin || "the product in the reference images", description: null };
 }
 
 // the CTA must name the shopping basket; small models sometimes invent words (seen: Burmese "ဝါးနီလေး",
@@ -225,7 +273,7 @@ export class ScriptError extends Error {
   constructor(message) { super(message); this.name = "ScriptError"; this.status = 422; }
 }
 
-export async function generateScript(product, lang, { seconds = 10, angle = "auto" } = {}) {
+export async function generateScript(product, lang, { seconds = 10, angle = "auto", format = "voiceover" } = {}) {
   if (!LANG_NAME[lang]) throw new Error(`unsupported lang ${lang}`);
   if (!llmEnabled()) return { ...MOCK[lang](product), mock: true };
   // a name / details in the other language (e.g. a Thai title for a Burmese script) → English first
@@ -235,7 +283,7 @@ export async function generateScript(product, lang, { seconds = 10, angle = "aut
   }
   // small models still sometimes copy letters of the other language: check every reply and ask
   // again, naming the broken words.
-  const prompt = buildScriptPrompt(source, lang, seconds, angle);
+  const prompt = buildScriptPrompt(source, lang, seconds, angle, format);
   let script, bad = [];
   for (let attempt = 1; attempt <= 3; attempt++) {
     const fix = bad.length
@@ -255,10 +303,10 @@ export async function generateScript(product, lang, { seconds = 10, angle = "aut
  * from the script beats; length and rules come from code. scripts: { th?, my? }
  * → { style, seconds, shots, prompt, mock }   mock = default shots (no LLM or unusable reply)
  */
-export async function generateClipPrompt(product, { style = "product", scripts = {} } = {}) {
+export async function generateClipPrompt(product, { style = "product", scripts = {}, format = "voiceover" } = {}) {
   const seconds = clipSeconds(scripts);
   const script = scripts.my || scripts.th;
   let shots = null;
-  if (llmEnabled() && script) shots = parseShots(await chat(buildShotRequest(product, { style, seconds, script }), 0.7, undefined, "clip_prompt"));
-  return { style, seconds, shots, prompt: buildClipPrompt(product, { style, seconds, shots }), mock: !shots };
+  if (llmEnabled() && script) shots = parseShots(await chat(buildShotRequest(product, { style, seconds, script, format }), 0.7, undefined, "clip_prompt"));
+  return { style, format, seconds, shots, prompt: buildClipPrompt(product, { style, seconds, shots }), mock: !shots };
 }

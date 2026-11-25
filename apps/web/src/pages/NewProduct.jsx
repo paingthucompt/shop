@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, LANGS, LANG_FLAG } from "../api.js";
 import PhotoPicker from "../PhotoPicker.jsx";
-import { ANGLE_KEYS, STYLE_KEYS, angleName, angleDesc, styleName, styleDesc } from "../options.js";
+import { ANGLE_KEYS, STYLE_KEYS, FORMAT_STYLE, angleName, angleDesc, styleName, styleDesc } from "../options.js";
+import FormatPicker from "../FormatPicker.jsx";
 import { t } from "../i18n.js";
+import Icon from "../icons.jsx";
 
 // Runs on the product page in the user's own browser (so the shop's bot protection is not an issue) and
 // opens "Add product" with the name, details, price and photo links it finds. Kept short: it is a bookmark.
@@ -41,6 +43,8 @@ export default function NewProduct() {
   const [langs, setLangs] = useState({ th: true, my: true });
   const [angle, setAngle] = useState("auto");
   const [style, setStyle] = useState("product");
+  const [format, setFormat] = useState("voiceover");
+  const chooseFormat = (f) => { setFormat(f); setStyle(FORMAT_STYLE[f] || "product"); };
   const nav = useNavigate();
 
   async function importLink(body) {
@@ -87,7 +91,7 @@ export default function NewProduct() {
       const form = new FormData(e.target); // only named fields; the language / angle / style / link controls are not sent
       for (const f of photos) form.append("images", f);
       const p = await api("/products", { method: "POST", form });
-      nav(`/products/${p.id}`, { state: { autoGenerate: { langs: chosen, angle, style } } });
+      nav(`/products/${p.id}`, { state: { autoGenerate: { langs: chosen, angle, style, format } } });
     } catch (err) { setError(err.message); setBusy(false); }
   }
 
@@ -97,7 +101,7 @@ export default function NewProduct() {
       <div className="page-head"><div><h1>{t("new.title")}</h1><p className="muted">{t("new.subtitle")}</p></div></div>
 
       <section className="card import">
-        <h2 className="card-title"><span className="num">⚡</span>{t("new.importTitle")}</h2>
+        <h2 className="card-title"><span className="num"><Icon name="link" size={16} /></span>{t("new.importTitle")}</h2>
         <p className="muted small">{t("new.importText")}</p>
         <div className="input-row">
           <input value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://www.tiktok.com/view/product/…  ·  https://shopee.co.th/…"
@@ -117,7 +121,7 @@ export default function NewProduct() {
       </section>
 
       <form onSubmit={submit} className="card form">
-        <h2 className="card-title"><span className="num">✎</span>{t("new.detailsTitle")}</h2>
+        <h2 className="card-title"><span className="num"><Icon name="script" size={16} /></span>{t("new.detailsTitle")}</h2>
         <input type="hidden" name="source" value={fields.source} />
         <label><span>{t("new.name")} <span className="req">*</span></span><input name="title" required maxLength={200} value={fields.title} onChange={set("title")} placeholder={t("new.namePh")} /></label>
         <label>{t("new.details")}<textarea name="description" rows={4} value={fields.description} onChange={set("description")} placeholder={t("new.detailsPh")} />
@@ -144,7 +148,7 @@ export default function NewProduct() {
           )}
         </div>
 
-        <h2 className="card-title"><span className="num">🎬</span>{t("new.videoTitle")}</h2>
+        <h2 className="card-title"><span className="num"><Icon name="film" size={16} /></span>{t("new.videoTitle")}</h2>
         <div className="field">
           <span className="label">{t("new.langs")}</span>
           <div className="chips">
@@ -154,6 +158,7 @@ export default function NewProduct() {
           </div>
           <span className="hint">{t("new.langsHint")}</span>
         </div>
+        <FormatPicker value={format} onChange={chooseFormat} />
         <div className="cols">
           <label>{t("step1.angle")}
             <select value={angle} onChange={(e) => setAngle(e.target.value)}>{ANGLE_KEYS.map((k) => <option key={k} value={k}>{angleName(k)}</option>)}</select>

@@ -8,9 +8,9 @@ import { providerError } from "./api-errors.js";
 const cfg = () => ({
   baseUrl: (process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, ""),
   apiKey: keyEnv().GEMINI_API_KEY,
-  model: process.env.GEMINI_VIDEO_MODEL || "gemini-omni-1.2-flash",
-  resolution: process.env.GEMINI_VIDEO_RESOLUTION || "720p",
-  duration: geminiDuration(process.env.GEMINI_VIDEO_DURATION),
+  model: keyEnv().GEMINI_VIDEO_MODEL || "gemini-omni-1.2-flash",
+  resolution: keyEnv().GEMINI_VIDEO_RESOLUTION || "720p",
+  duration: geminiDuration(keyEnv().GEMINI_VIDEO_DURATION),
 });
 
 /** Omni accepts whole seconds 3–15 (default 10) */
@@ -20,9 +20,11 @@ export function geminiDuration(value) {
 }
 
 export const geminiEnabled = () => Boolean(cfg().apiKey);
-export const geminiSettings = () => {
-  const { model, resolution, duration } = cfg();
-  return { model, resolution, duration };
+const RESOLUTIONS = ["360p", "720p", "1080p"];
+/** model / resolution / length; resolution: the one picked for this video (else the setting) */
+export const geminiSettings = (resolution) => {
+  const c = cfg();
+  return { model: c.model, resolution: RESOLUTIONS.includes(resolution) ? resolution : c.resolution, duration: c.duration };
 };
 
 /** "data:image/png;base64,AAAA" → { mime_type, data } */
@@ -118,8 +120,8 @@ async function videoBytes(video) {
  *   resumeId: an interaction id saved earlier — poll it instead of starting (and paying for) a new one
  *   onId(id): called once the interaction exists, so the caller can persist it before polling
  */
-export async function generateVideo(product, imageUrls, { style, resumeId, onId, onStatus, intervalMs = 10_000, timeoutMs = 15 * 60_000 } = {}) {
-  let it = resumeId ? null : await call("/interactions", { method: "POST", body: JSON.stringify(buildInteractionBody(product, imageUrls, { style })) });
+export async function generateVideo(product, imageUrls, { style, resolution, resumeId, onId, onStatus, intervalMs = 10_000, timeoutMs = 15 * 60_000 } = {}) {
+  let it = resumeId ? null : await call("/interactions", { method: "POST", body: JSON.stringify(buildInteractionBody(product, imageUrls, { style, resolution: geminiSettings(resolution).resolution })) });
   const id = resumeId || it.id;
   if (!resumeId && id) await onId?.(id);
   const start = Date.now();

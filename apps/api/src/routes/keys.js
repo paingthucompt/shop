@@ -3,13 +3,14 @@
 // Keys are stored encrypted and never returned — only a hint like "AIza…x7Qk".
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
-import { KEY_PROVIDERS, deleteUserKey, listUserKeys, saveUserKey } from "@app/db";
-import { keys } from "@app/providers";
-import { ah, requireAuth } from "../lib.js";
+import { KEY_PROVIDERS, deleteUserKey, listUserKeys, saveUserKey, loadUserPrefs, saveUserPrefs } from "@app/db";
+import { keys, aiCatalog, higgsfield, geminiVideo, sceneImages, pricing } from "@app/providers";
+import { ah, requireAuth, withUserKeys } from "../lib.js";
 import { httpError } from "../validate.js";
 
 const r = Router();
 r.use(requireAuth);
+r.use(withUserKeys); // prices below depend on the user's keys (e.g. the AI start frame needs Gemini)
 
 // each save asks Google / BytePlus whether the key works → don't let the app be used as a key tester
 const saveLimiter = rateLimit({
@@ -26,10 +27,30 @@ const parseProvider = (p) => {
   return p;
 };
 
-/** GET /api/keys → { keys: [{ provider, hint, verified_at, updated_at }], own_keys_only, using_own_keys } */
+/** what can be chosen in "AI choices" (names for the Settings page) */
+const catalog = () => ({
+  script: Object.entries(aiCatalog.SCRIPT_CHOICES).map(([id, c]) => ({ id, name: c.name, provider: c.provider })),
+  voices: Object.entries(aiCatalog.VOICES).map(([id, desc]) => ({ id, desc })),
+  // US$ of one AI clip with each choice (same price table as the quote and cost tracking)
+  gemini_video: Object.entries(aiCatalog.GEMINI_VIDEO).map(([id, name]) => {
+    const c = geminiVideo.geminiSettings(id);
+    return { id, name, seconds: c.duration, usd: pricing.estimateClipUsd({ provider: "gemini", model: c.model, seconds: c.duration, resolution: id }) };
+  }),
+  higgsfield_models: Object.entries(higgsfield.MODELS).map(([id, m]) => {
+    const c = higgsfield.higgsfieldSettings(id);
+    return { id, name: m.name, seconds: c.duration, usd: pricing.estimateClipUsd({ provider: "higgsfield", model: id, seconds: c.duration, resolution: c.resolution }) + sceneImages.startFrameUsd() };
+  }),
+});
+
+/**
+ * GET /api/keys → { keys: [{ provider, hint, verified_at, updated_at }], own_keys_only, using_own_keys,
+ *                   prefs: the user's AI choices, catalog: what can be chosen }
+ */
 r.get("/", ah(async (req, res) => {
   const list = await listUserKeys(req.userId);
   res.json({
+    prefs: aiCatalog.cleanPrefs(await loadUserPrefs(req.userId)),
+    catalog: catalog(),
     keys: list,
     own_keys_only: keys.ownKeysOnly(),
     // only a Gemini key switches the user to their own keys (it does the scripts, voices and pictures)
@@ -37,11 +58,22 @@ r.get("/", ah(async (req, res) => {
   });
 }));
 
+/** PUT /api/keys/prefs { script?, voice?, voice_b?, video_provider?, gemini_video?, higgsfield_model? } → prefs */
+r.put("/prefs", ah(async (req, res) => {
+  const prefs = aiCatalog.cleanPrefs(req.body || {});
+  res.json({ prefs: aiCatalog.cleanPrefs(await saveUserPrefs(req.userId, prefs)) });
+}));
+
 /** PUT /api/keys/:provider { key } → checks the key with the provider, then stores it encrypted */
 r.put("/:provider", saveLimiter, ah(async (req, res) => {
   const provider = parseProvider(req.params.provider);
   const key = String(req.body.key || "").trim();
   if (key.length < 20 || key.length > 300 || /\s/.test(key)) throw httpError(400, "that doesn't look like an API key");
+  if (provider === "seedance") throw httpError(400, "BytePlus Seedance keys are no longer used — add a Higgsfield key instead");
+  // Higgsfield credentials are a key ID and a secret: stored together as "ID:SECRET"
+  if (provider === "higgsfield" && !/^[^:]+:[^:]+$/.test(key)) {
+    throw Object.assign(httpError(400, "paste the Higgsfield key as KEY_ID:KEY_SECRET (both parts, joined by a colon)"), { code: "key_format" });
+  }
   if (provider !== "gemini" && !(await listUserKeys(req.userId)).some((k) => k.provider === "gemini")) {
     throw httpError(400, "add your Gemini key first — it writes the scripts and makes the voices");
   }

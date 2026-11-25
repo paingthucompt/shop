@@ -72,7 +72,8 @@ export function recordUsage(row) {
 // ---------------- users' own AI API keys (encrypted at rest with AES-256-GCM)
 // The encryption key comes from KEYS_SECRET (or, if unset, JWT_SECRET). Changing it makes stored keys
 // unreadable — users then simply enter their key again.
-export const KEY_PROVIDERS = ["gemini", "seedance", "openai"];
+// seedance (BytePlus) is no longer offered — kept so an old key can still be removed
+export const KEY_PROVIDERS = ["gemini", "higgsfield", "openai", "seedance"];
 
 function keysSecret() {
   const s = process.env.KEYS_SECRET || process.env.JWT_SECRET || "";
@@ -129,3 +130,13 @@ export async function loadUserKeys(userId) {
   }
   return keys;
 }
+
+/** the user's own AI choices (users.ai_prefs) — cleaned by the caller (providers ai-catalog.js) */
+export async function loadUserPrefs(userId) {
+  if (!userId) return {};
+  const { rows } = await query("SELECT ai_prefs FROM users WHERE id = $1", [userId]);
+  return rows[0]?.ai_prefs || {};
+}
+
+export const saveUserPrefs = (userId, prefs) =>
+  query("UPDATE users SET ai_prefs = $2 WHERE id = $1 RETURNING ai_prefs", [userId, JSON.stringify(prefs)]).then((r) => r.rows[0]?.ai_prefs || {});

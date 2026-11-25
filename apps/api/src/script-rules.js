@@ -50,10 +50,15 @@ export function truncateText(text, max) {
  * Lines + their optional on-screen captions, kept aligned: empty lines are dropped together with
  * their caption, and captions always has exactly one entry per line ("" = show the spoken line).
  */
-function alignLines(rawLines, rawCaptions) {
+/** "A" | "B" — who says a line in a mini drama (anything else → A) */
+const speakerOf = (v) => (String(v ?? "").trim().toUpperCase() === "B" ? "B" : "A");
+
+/** lines with their caption and speaker; an empty line is dropped together with both */
+function alignLines(rawLines, rawCaptions, rawSpeakers) {
   const caps = Array.isArray(rawCaptions) ? rawCaptions : [];
-  const pairs = rawLines.map((l, i) => [clean(l), clean(caps[i])]).filter(([l]) => l);
-  return { lines: pairs.map(([l]) => l), captions: pairs.map(([, c]) => c) };
+  const spk = Array.isArray(rawSpeakers) ? rawSpeakers : [];
+  const rows = rawLines.map((l, i) => [clean(l), clean(caps[i]), speakerOf(spk[i])]).filter(([l]) => l);
+  return { lines: rows.map(([l]) => l), captions: rows.map(([, c]) => c), speakers: rows.map(([, , sp]) => sp) };
 }
 
 /** User-edited script → { script } or { error } */
@@ -62,7 +67,8 @@ export function validateScript(body, lang) {
   const cta = clean(body?.cta);
   if (!Array.isArray(body?.lines)) return { error: "hook, lines[], cta required" };
   if (body.captions !== undefined && !Array.isArray(body.captions)) return { error: "captions must be an array" };
-  const { lines, captions } = alignLines(body.lines, body.captions);
+  if (body.speakers !== undefined && !Array.isArray(body.speakers)) return { error: "speakers must be an array" };
+  const { lines, captions, speakers } = alignLines(body.lines, body.captions, body.speakers);
   const L = SCRIPT_LIMITS;
   if (!hook || !cta || !lines.length) return { error: "hook, lines[], cta required" };
   if (hook.length > L.hook) return { error: `hook is too long (max ${L.hook} characters)` };
@@ -72,17 +78,18 @@ export function validateScript(body, lang) {
   if (captions.some((c) => c.length > L.caption)) return { error: `on-screen text must be at most ${L.caption} characters` };
   const foreign = lang && foreignScriptIssue(lang, { hook, lines, captions, cta });
   if (foreign) return { error: foreign };
-  return { script: { hook, lines, captions, cta } };
+  return { script: { hook, lines, captions, speakers, cta } };
 }
 
 /** LLM output is already short by prompt; clamp it anyway (at word boundaries) so a runaway reply can't exceed the limits */
 export function clampScript(s) {
   const L = SCRIPT_LIMITS;
-  const { lines, captions } = alignLines(s.lines, s.captions);
+  const { lines, captions, speakers } = alignLines(s.lines, s.captions, s.speakers);
   return {
     hook: truncateText(s.hook, L.hook),
     lines: lines.slice(0, L.maxLines).map((l) => truncateText(l, L.line)),
     captions: captions.slice(0, L.maxLines).map((c) => truncateText(c, L.caption)),
+    speakers: speakers.slice(0, L.maxLines),
     cta: truncateText(s.cta, L.cta),
   };
 }

@@ -3,8 +3,8 @@ import { resolve, relative, sep } from "node:path";
 import jwt from "jsonwebtoken";
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
-import { loadUserKeys } from "@app/db";
-import { keys } from "@app/providers";
+import { loadUserKeys, loadUserPrefs } from "@app/db";
+import { keys, aiCatalog } from "@app/providers";
 
 export const STORAGE_DIR = resolve(process.env.STORAGE_DIR || "./storage");
 
@@ -69,7 +69,8 @@ export const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)
 // ---------------- whose AI keys a request uses (after requireAuth)
 // the user's own Gemini / Seedance keys when they added them (no credits charged), else the server's
 export function withUserKeys(req, _res, next) {
-  loadUserKeys(req.userId).then((k) => keys.withKeys(keys.userKeyContext(k), next), next);
+  Promise.all([loadUserKeys(req.userId), loadUserPrefs(req.userId)])
+    .then(([k, prefs]) => keys.withKeys(keys.userKeyContext(k, aiCatalog.cleanPrefs(prefs)), next), next);
 }
 
 /** OWN_KEYS_ONLY and the user hasn't added their Gemini key yet → 400 the web app turns into a Settings link */

@@ -30,6 +30,8 @@ test("error messages → what the user must fix", () => {
   assert.equal(errorCode(providerError("LLM", 429, OPENAI_NO_CREDIT)), "key_billing");
   assert.equal(errorCode("Gemini 503: The model is overloaded (high demand)"), "busy");
   assert.equal(errorCode("ffmpeg failed"), null);
+  const ark = JSON.stringify({ error: { code: "ModelNotOpen", message: "Your account 1 has not activated the model dreamina-seedance-2-5. Please activate the model service in the Ark Console." } });
+  assert.equal(errorCode(providerError("Seedance", 404, ark)), "key_model_off");
   assert.ok(isKeyProblem("key_billing") && !isKeyProblem("busy") && !isKeyProblem(null));
 });
 

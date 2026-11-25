@@ -184,6 +184,8 @@ async function ttsAzure(text, voice, rate, outFile) {
 // GEMINI_STYLE (the delivery note per language) lives in gemini-audio.js, shared with `npm run voice -- say`
 // a prebuilt voice (Leda, Kore …) or your own custom voice_<id> from `npm run voice` (tools/gemini-voice.mjs)
 const geminiVoice = (lang) => process.env[`GEMINI_TTS_VOICE_${lang.toUpperCase()}`] || process.env.GEMINI_TTS_VOICE || "Leda";
+// the second person of a mini drama: a clearly different (male) voice
+const geminiVoiceB = (lang) => process.env[`GEMINI_TTS_VOICE_B_${lang.toUpperCase()}`] || process.env.GEMINI_TTS_VOICE_B || "Puck";
 // "off" → no language hint; set once per run when the API rejects the hint for a language
 const ttsLanguageOff = new Set(process.env.GEMINI_TTS_LANGUAGE === "off" ? ["th", "my"] : []);
 
@@ -197,7 +199,7 @@ function reportTtsUsage(model, u, out) {
   })}`);
 }
 
-async function ttsGemini(text, lang, outFile) {
+async function ttsGemini(text, lang, outFile, speaker = "A") {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY not set");
   const base = (process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "");
@@ -208,7 +210,7 @@ async function ttsGemini(text, lang, outFile) {
       content: [{ type: "text", text, annotations: [{ type: "speech_metadata", style: process.env.GEMINI_TTS_STYLE || GEMINI_STYLE[lang] }] }],
     }],
     response_format: { type: "audio" },
-    generation_config: { speech_config: [{ voice: geminiVoice(lang) }] },
+    generation_config: { speech_config: [{ voice: speaker === "B" ? geminiVoiceB(lang) : geminiVoice(lang) }] },
   };
   // pronunciation hint (th-TH / my-MM), as the gemini-api CLI's --language sends it
   const language = !ttsLanguageOff.has(lang) && GEMINI_TTS_LANGUAGE[lang];
@@ -288,10 +290,10 @@ function silences(file, noise = "-38dB", minSec = 0.3) {
  * minute): lines are joined with long pauses, then the audio is cut at the n-1 longest pauses so every
  * line still gets its own clip and caption timing. Returns null if the pauses can't be found reliably.
  */
-async function ttsGeminiBatch(texts, lang, workDir) {
+async function ttsGeminiBatch(texts, lang, workDir, speaker = "A") {
   if (texts.length < 2) return null;
-  const full = join(workDir, "vo_all.wav");
-  await ttsGemini(texts.join("\n<long pause>\n"), lang, full);
+  const full = join(workDir, `vo_all_${speaker}.wav`);
+  await ttsGemini(texts.join("\n<long pause>\n"), lang, full, speaker);
   const total = probe(full).duration;
   const gaps = silences(full).filter((g) => g.start > 0.3 && g.end < total - 0.3);
   if (gaps.length < texts.length - 1) return null;
@@ -300,7 +302,7 @@ async function ttsGeminiBatch(texts, lang, workDir) {
   const bounds = [0, ...cuts, total];
   const parts = [];
   for (let i = 0; i < texts.length; i++) {
-    const seg = join(workDir, `vo_${i}.wav`);
+    const seg = join(workDir, `vo_${speaker}_${i}.wav`);
     run("ffmpeg", ["-v", "error", "-y", "-i", full, "-ss", bounds[i].toFixed(3), "-to", bounds[i + 1].toFixed(3), "-c:a", "pcm_s16le", seg]);
     let file = seg;
     try { const t = trimSilence(seg); if (probe(t).duration > 0.3) file = t; } catch { /* keep untrimmed */ }
@@ -376,10 +378,10 @@ function geminiFailed(err) {
 
 const WAV_TTS = { gemini: ttsGemini };
 
-async function tts(text, voice, rate, outFile, lang) {
+async function tts(text, voice, rate, outFile, lang, speaker = "A") {
   if (WAV_TTS[TTS_PROVIDER] && !geminiOff) {
     try {
-      await WAV_TTS[TTS_PROVIDER](text, lang, (outFile = outFile.replace(/\.mp3$/, ".wav")));
+      await WAV_TTS[TTS_PROVIDER](text, lang, (outFile = outFile.replace(/\.mp3$/, ".wav")), speaker);
     } catch (err) {
       geminiFailed(err);
       ttsEdge(text, voice, rate, (outFile = outFile.replace(/\.wav$/, ".mp3")));
@@ -433,6 +435,9 @@ mkdirSync(work, { recursive: true });
 const DEFAULT_VOICES = { th: "th-TH-PremwadeeNeural", my: "my-MM-NilarNeural" };
 const voiceLang = ONLY; // spoken language = subtitle language
 const voice = cfg.voices?.[ONLY] || DEFAULT_VOICES[ONLY];
+// mini drama: the voice of person B (Edge / Azure); Gemini uses GEMINI_TTS_VOICE_B
+const voiceB = cfg.voicesB?.[ONLY] || ALT_VOICE[voice] || voice;
+const FORMAT = cfg.format || "voiceover";
 const rate = cfg.rates?.[ONLY] || "+5%";
 const trim = cfg.trim || {};
 
@@ -470,19 +475,27 @@ if (useTts) {
   if (TTS_PROVIDER === "edge") {
     try { run(EDGE_TTS, ["--help"]); } catch { die(`edge-tts not found (${EDGE_TTS}) — run: pipx install edge-tts, set EDGE_TTS_BIN to its path, or use TTS_PROVIDER=none`); }
   }
-  let batch = null;
+  // one request per voice: all lines of a voice are spoken in one go, then cut at the pauses
+  // (a mini drama has two voices → two requests); a voice whose split fails falls back to one request per line
+  const batch = new Array(spoken.length).fill(null);
   if (TTS_PROVIDER === "gemini") {
-    try { batch = await ttsGeminiBatch(spoken.map((s) => s[voiceLang]), voiceLang, work); } catch (err) {
-      if (/per day|429/.test(err.message)) geminiFailed(err); // quota: don't spend more requests per line
-      else console.warn(`⚠ one-request TTS failed (${err.message.slice(0, 120)}) — one request per line`);
+    for (const who of ["A", "B"]) {
+      const idx = spoken.map((s, i) => ((s.speaker || "A") === who ? i : -1)).filter((i) => i >= 0);
+      if (idx.length < 2 || geminiOff) continue;
+      let parts = null;
+      try { parts = await ttsGeminiBatch(idx.map((i) => spoken[i][voiceLang]), voiceLang, work, who); } catch (err) {
+        if (/per day|429/.test(err.message)) geminiFailed(err); // quota: don't spend more requests per line
+        else console.warn(`⚠ one-request TTS failed (${err.message.slice(0, 120)}) — one request per line`);
+      }
+      if (parts) { idx.forEach((i, k) => { batch[i] = parts[k]; }); log(`TTS: 1 request for ${idx.length} lines${who === "B" ? " (voice B)" : ""}`); }
+      else if (!geminiOff) console.warn("⚠ could not split the one-request voiceover by its pauses — one request per line");
     }
-    if (batch) log(`TTS: 1 request for ${spoken.length} lines`);
-    else if (spoken.length > 1 && !geminiOff) console.warn("⚠ could not split the one-request voiceover by its pauses — one request per line");
   }
   const speed = voiceSpeed(cfg, voiceLang);
   if (Math.abs(speed - 1) >= 0.005) log(`voice speed ×${speed}`);
   for (const [i, s] of spoken.entries()) {
-    let { file, dur } = batch ? batch[i] : await tts(s[voiceLang], voice, rate, join(work, `vo_${i}.mp3`), voiceLang);
+    const who = s.speaker || "A";
+    let { file, dur } = batch[i] || await tts(s[voiceLang], who === "B" ? voiceB : voice, rate, join(work, `vo_${i}.mp3`), voiceLang, who);
     if (Math.abs(speed - 1) >= 0.005) { file = speedUp(file, speed); dur = probe(file).duration; }
     clips.push({ ...s, file, dur });
     log(`TTS ${i + 1}/${spoken.length}: ${dur.toFixed(2)}s  ${s[voiceLang]}`);
@@ -526,8 +539,11 @@ const S = {
   HTH: fs(0.076), HMY: fs(0.068), CTH: fs(0.07), CMY: fs(0.064),
   // key-phrase captions are short → bigger, on a translucent box so they read over busy product photos
   KTH: fs(0.07), KMY: fs(0.068),
+  // drama: person B's subtitles (yellow); montage: big centre text
+  BTH: fs(cfg.style?.thSize ?? 0.062), BMY: fs(cfg.style?.mySize ?? 0.056),
+  MTH: fs(0.095), MMY: fs(0.085),
 };
-const LANG = { TH: "th", MY: "my", HTH: "th", HMY: "my", CTH: "th", CMY: "my", KTH: "th", KMY: "my" };
+const LANG = { TH: "th", MY: "my", HTH: "th", HMY: "my", CTH: "th", CMY: "my", KTH: "th", KMY: "my", BTH: "th", BMY: "my", MTH: "th", MMY: "my" };
 const margin = Math.round(W * 0.07);
 const maxW = W - margin * 2;
 const subBottom = Math.round(H * (cfg.style?.bottomSafe ?? 0.24)); // TikTok caption/UI safe zone
@@ -544,6 +560,11 @@ const styles = [
   // BorderStyle 3 = box behind the text in OutlineColour (&H40 alpha ≈ 75% opaque black)
   ["KTH", FONTS.th.family, S.KTH, "&H00FFFFFF", "&H40000000", "&H40000000", 3, Math.round(W * 0.016), 2, 0],
   ["KMY", FONTS.my.family, S.KMY, "&H00FFFFFF", "&H40000000", "&H40000000", 3, Math.round(W * 0.016), 2, 0],
+  ["BTH", FONTS.th.family, S.BTH, "&H0047E6FF", "&H00000000", "&H80000000", 1, out + 1, 2, 0],
+  ["BMY", FONTS.my.family, S.BMY, "&H0047E6FF", "&H00000000", "&H80000000", 1, out + 1, 2, 0],
+  // montage text sits on a dark translucent box (BorderStyle 3) so it reads over any shot
+  ["MTH", FONTS.th.family, S.MTH, "&H00FFFFFF", "&H30101010", "&H30101010", 3, Math.round(W * 0.02), 5, 0],
+  ["MMY", FONTS.my.family, S.MMY, "&H00FFFFFF", "&H30101010", "&H30101010", 3, Math.round(W * 0.02), 5, 0],
 ];
 const styleLines = styles.map(([n, f, sz, pc, oc, bc, bs, ow, al, mv]) =>
   `Style: ${n},${f},${assSize(LANG[n], sz)},${pc},&H000000FF,${oc},${bc},-1,0,0,0,100,100,0,0,${bs},${ow},${bs === 1 ? 1 : 0},${al},${margin},${margin},${mv},1`
@@ -590,12 +611,30 @@ if (hook) {
   const h = clips.find((c) => c.kind === "hook");
   events.push(...topBlock(0, h ? h.end + 0.3 : hookShow, ONLY === "th" ? hook.th : null, ONLY === "my" ? hook.my : null));
 }
+/** montage: one big phrase in the middle of the frame that pops in */
+function centreBlock(start, end, text, style) {
+  const ls = wrap(text, LANG[style], S[style], maxW);
+  const x = Math.round(W / 2);
+  let y = Math.round(H * 0.46 - ((ls.length - 1) * lineH(style)) / 2);
+  const pop = "{\\fad(80,120)\\fscx70\\fscy70\\t(0,160,\\fscx108\\fscy108)\\t(160,260,\\fscx100\\fscy100)}";
+  return ls.map((l) => {
+    const e = `Dialogue: 1,${assTime(start)},${assTime(end)},${style},,0,0,0,,{\\an5\\pos(${x},${y})}${pop}${assText(l, LANG[style], S[style])}`;
+    y += lineH(style);
+    return e;
+  });
+}
+
 for (const c of clips.filter((c) => c.kind === "line")) {
   // on-screen text: an optional short key phrase (`caption`) instead of the spoken sentence —
   // muted viewers get the selling point at a glance; the .srt keeps the spoken words
   const key = !!c.caption?.trim();
   const shown = key ? c.caption.trim() : c[ONLY];
-  const [thStyle, myStyle] = key ? ["KTH", "KMY"] : ["TH", "MY"];
+  if (FORMAT === "montage") {
+    events.push(...centreBlock(c.start, c.end + GAP * 0.8, shown, ONLY === "th" ? "MTH" : "MMY"));
+    continue;
+  }
+  // drama: dialogue subtitles, person B in yellow
+  const [thStyle, myStyle] = key ? ["KTH", "KMY"] : c.speaker === "B" ? ["BTH", "BMY"] : ["TH", "MY"];
   events.push(...bilingual(c.start, c.end + GAP * 0.8, ONLY === "th" ? shown : null, ONLY === "my" ? shown : null, thStyle, myStyle, subY));
 }
 if (cta) {

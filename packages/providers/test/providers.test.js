@@ -290,7 +290,7 @@ test("scene images: plan = storyboard beats (≤ 6 scenes covering the clip), pr
   assert.match(p, /Never a grid, collage, split screen/);
   assert.match(p, /show only the most telling one\): chopper hero\.\n/);
   assert.match(p, /fills the entire frame edge to edge/);
-  assert.match(p, /No text, letters, captions/);
+  assert.match(p, /Apart from what is printed on the product itself: no text, captions/);
   assert.match(p, /fully visible, sharp/);
   assert.doesNotMatch(p, /top and bottom fifth/); // that wording made the model blur the edges
   assert.doesNotMatch(p, /[฀-๿]/);
@@ -484,4 +484,24 @@ test("usage: withUsage context is attached to reported rows and sent to the sink
   assert.deepEqual([rows[0].userId, rows[0].productId, rows[0].usd], [5, 37, 0.067]);
   assert.equal(rows[1].userId, undefined);
   assert.deepEqual(geminiTokens({ total_input_tokens: 10, total_output_tokens: 20, total_thought_tokens: 5 }), { input_tokens: 10, output_tokens: 25 });
+});
+
+test("script formats: the prompt asks for the format; a drama keeps who says each line", async () => {
+  const { buildScriptPrompt, parseScript, SCRIPT_FORMATS } = await import("../src/llm.js");
+  const { buildShotRequest } = await import("../src/flow-prompt.js");
+  assert.deepEqual(SCRIPT_FORMATS, ["voiceover", "presenter", "drama", "montage"]);
+  const p = { title: "Mini fan", description: "USB, 3 speeds" };
+  assert.match(buildScriptPrompt(p, "my", 10, "auto", "drama"), /MINI DRAMA[\s\S]*"speakers"/);
+  assert.match(buildScriptPrompt(p, "th", 10, "auto", "presenter"), /TALKING PRESENTER/);
+  assert.match(buildScriptPrompt(p, "th", 10, "auto", "montage"), /GRAPHIC MONTAGE/);
+  assert.doesNotMatch(buildScriptPrompt(p, "th", 10), /Format:|speakers/);
+  const s = parseScript('{"hook":"h","lines":["a","","b"],"speakers":["B","A","x"],"captions":["","",""],"cta":"c"}');
+  assert.deepEqual([s.lines, s.speakers], [["a", "b"], ["B", "A"]]);
+  assert.equal(parseScript('{"hook":"h","lines":["a"],"cta":"c"}').speakers, undefined);
+  // the hook repeated as line 1 is dropped (with its speaker)
+  const r = parseScript('{"hook":"ပူလိုက်တာ။","lines":["ပူလိုက်တာ","b"],"speakers":["A","B"],"cta":"c"}');
+  assert.deepEqual([r.lines, r.speakers], [["b"], ["B"]]);
+  const shots = buildShotRequest(p, { format: "drama", script: { hook: "h", lines: ["a"], speakers: ["B"], cta: "c" } });
+  assert.match(shots, /line 1 \(B\): a/);
+  assert.match(shots, /two local friends/);
 });

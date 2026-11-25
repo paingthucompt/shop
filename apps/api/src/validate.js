@@ -1,6 +1,6 @@
 // Pure request-validation helpers (no DB / Redis imports, so they are unit-testable).
 import { CLIP_STYLES } from "../../../packages/providers/src/seedance.js";
-import { SCRIPT_ANGLES } from "../../../packages/providers/src/llm.js";
+import { SCRIPT_ANGLES, SCRIPT_FORMATS } from "../../../packages/providers/src/llm.js";
 import { errorCode } from "../../../packages/providers/src/api-errors.js";
 
 export function httpError(status, message) {
@@ -45,6 +45,13 @@ export function parseClipSource(value) {
   return value;
 }
 
+/** the AI video service the user picked: gemini | higgsfield | seedance; missing → null (the default one) */
+export function parseAiProvider(value) {
+  if (value === undefined || value === null || value === "") return null;
+  if (!["gemini", "higgsfield", "seedance"].includes(value)) throw httpError(400, "ai_provider must be gemini, higgsfield or seedance");
+  return value;
+}
+
 export const VOICE_SPEED = { min: 0.8, max: 1.5 };
 
 /** { th: 1.1, my: 1.2 } → validated speeds for the chosen languages (0.05 steps); empty → null (server default) */
@@ -70,6 +77,13 @@ export function parseAngle(value) {
   return value;
 }
 
+/** script format (voiceover | presenter | drama | montage); missing → voiceover */
+export function parseFormat(value) {
+  if (value === undefined || value === null || value === "") return "voiceover";
+  if (!SCRIPT_FORMATS.includes(value)) throw httpError(400, `format must be one of: ${SCRIPT_FORMATS.join(", ")}`);
+  return value;
+}
+
 /** only real Shopee hosts (shopee.co.th, shopee.com.my, shp.ee …) get an affiliate link made with our credentials */
 export function isShopeeUrl(url) {
   try {
@@ -88,7 +102,8 @@ const KEY_PROBLEM = {
   key_restricted: "The API key has restrictions (IP / website / API) that block this app. Use a key without restrictions.",
   key_suspended: "The Google Cloud project of the API key is suspended. Check it in Google Cloud Console.",
   key_service_disabled: "The Gemini API is turned off for the API key's project. Turn it on in Google Cloud Console and try again in a few minutes.",
-  key_billing: "This needs billing turned on for the API key's project (free keys can't make AI video). Turn on billing in Google AI Studio.",
+  key_model_off: "This AI model isn't available on your account yet. Switch it on in the provider's console (Higgsfield: check the model and your account; BytePlus: Model activation), or choose another AI video service.",
+  key_billing: "Your AI account has no billing or not enough balance. Turn on billing in Google AI Studio (free keys can't make AI video), or top up your Higgsfield / OpenAI balance.",
 };
 
 /** what a failed job's error is about, for the web app to translate: key_* | busy | null */
@@ -100,6 +115,10 @@ export function publicError(message, { ownKey = false } = {}) {
   const code = errorCode(m);
   if (KEY_PROBLEM[code]) return KEY_PROBLEM[code];
   if (code === "busy" && ownKey) return "Google's AI service is busy or your key's quota is used up — please try again later.";
+  if (/Higgsfield nsfw/i.test(m)) return "The AI video service refused these photos or this description (content filter) — nothing was charged. Try another main photo.";
+  if (/Higgsfield request (failed|canceled)/i.test(m)) return "The AI clip could not be generated (Higgsfield) — failed clips are not charged. Try again or use a clearer main photo.";
+  if (/Higgsfield request timed out/i.test(m)) return "The AI clip took too long to generate (Higgsfield).";
+  if (/^Higgsfield 4\d\d/i.test(m)) return "The AI clip request was rejected (Higgsfield).";
   if (/Seedance task (failed|expired)/i.test(m)) return "The AI clip could not be generated (Seedance). Try clearer product photos.";
   if (/Seedance task timed out/i.test(m)) return "The AI clip took too long to generate.";
   if (/^Seedance 4\d\d/i.test(m)) return "The AI clip request was rejected (Seedance).";

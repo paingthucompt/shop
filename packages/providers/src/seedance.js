@@ -2,6 +2,7 @@
 // Docs: POST {base}/contents/generations/tasks  →  GET {base}/contents/generations/tasks/{id}
 // Status: queued | running | succeeded | failed | expired
 import { geminiSettings } from "./gemini-video.js"; // circular with gemini-video.js, but only used at call time
+import { higgsfieldEnabled, higgsfieldSettings } from "./higgsfield.js"; // circular too, call time only
 import { env as keyEnv } from "./keys.js";
 import { providerError } from "./api-errors.js";
 
@@ -30,9 +31,22 @@ export function clipMode() {
 }
 
 /** model / length / resolution of the clip the current mode makes (shown in the quote, used for script length) */
-/** the AI video provider used when the user picks "AI video" for one video: Gemini, else Seedance, else null */
-export function aiVideoProvider() {
-  const forced = String(process.env.AI_VIDEO_PROVIDER || "").toLowerCase();
+/** every AI video service that has a key (for this user): the default first */
+const HAS_KEY = { gemini: () => Boolean(keyEnv().GEMINI_API_KEY), higgsfield: () => higgsfieldEnabled(), seedance: () => seedanceEnabled() };
+
+export function aiVideoProviders() {
+  const first = aiVideoProvider();
+  return [first, ...["gemini", "higgsfield", "seedance"].filter((p) => p !== first && HAS_KEY[p]())].filter(Boolean);
+}
+
+/**
+ * the AI video provider used when the user picks "AI video": the one they chose (if it has a key),
+ * else AI_VIDEO_PROVIDER, else Gemini, else Seedance, else null
+ */
+export function aiVideoProvider(chosen) {
+  if (HAS_KEY[chosen]?.()) return chosen;
+  const forced = String(keyEnv().AI_VIDEO_PROVIDER || "").toLowerCase();
+  if (forced === "higgsfield" && higgsfieldEnabled()) return "higgsfield";
   if (forced === "gemini" && keyEnv().GEMINI_API_KEY) return "gemini";
   if (forced === "seedance" && seedanceEnabled()) return "seedance";
   if (keyEnv().GEMINI_API_KEY) return "gemini";
@@ -40,8 +54,9 @@ export function aiVideoProvider() {
 }
 
 /** model / length / resolution of the clip a given mode makes (default: CLIP_MODE) */
-export function clipSettings(mode = clipMode()) {
-  if (mode === "gemini") return { mode, ...geminiSettings() };
+export function clipSettings(mode = clipMode(), { model } = {}) {
+  if (mode === "gemini") return { mode, ...geminiSettings(model) };
+  if (mode === "higgsfield") return { mode, ...higgsfieldSettings(model) };
   const c = cfg();
   return { mode, model: mode === "seedance" ? c.model || null : null, duration: c.duration, resolution: c.resolution };
 }
@@ -111,7 +126,10 @@ export function buildProductPrompt(product, { style = "product" } = {}) {
   const spec = STYLE_SPECS[style] || STYLE_SPECS.product;
   return [
     `Create a photorealistic vertical 9:16 social-commerce ${style === "presenter" ? "video" : "product video"} based STRICTLY on the supplied PRODUCT REFERENCE IMAGES.`,
-    `Product: ${product.title}${product.description ? ` — ${product.description}` : ""}.`,
+    // captions are added later in the viewer's language: any text the model writes would be in the wrong one
+    `NO ADDED TEXT IN THE VIDEO: no captions, subtitles, titles, slogans, feature callouts, price tags, banners or graphics.`,
+    `The product's OWN printed logo, brand name and label text MUST stay on the product exactly as in the references — clearly visible and readable in the shots, never removed, blurred or rewritten.`,
+    `Product: ${product.title}${product.description ? ` — ${String(product.description).slice(0, 400)}` : ""}.`,
     `Keep the exact product shape, colours, materials, logo and label text from the references. Do not invent features, accessories or text.`,
     `Product consistency: it is ONE single product that looks identical in every shot and across every cut — same colour, size, proportions and label position. Never morph, duplicate, resize or redesign it between shots.`,
     spec.look,

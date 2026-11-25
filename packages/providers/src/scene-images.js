@@ -3,6 +3,7 @@
 // 1,120 output image tokens). No text in the images — the app adds Thai / Myanmar captions itself.
 import { styleLook } from "./seedance.js";
 import { reportUsage, geminiTokens } from "./usage.js";
+import { priceUsage } from "./pricing.js";
 import { promptTitle, storyboardPanels } from "./flow-prompt.js";
 import { env as keyEnv } from "./keys.js";
 import { providerError } from "./api-errors.js";
@@ -47,17 +48,42 @@ export function planScenes(script, lang, { seconds = 15, shots } = {}) {
 }
 
 /** the image prompt for one scene */
-export function buildScenePrompt(product, { style = "product", visual, role } = {}) {
+// who is in the picture for each script format (see FORMAT_GUIDE in llm.js)
+const FORMAT_CAST = {
+  presenter: "People: one friendly local creator (Southeast Asian) holding or using the product, facing the camera.",
+  drama: "People: two local friends (Southeast Asian) in a real everyday place, natural expressions, acting out this moment of a short story.",
+  montage: "No people unless their hands use the product; clean uncluttered background with empty space above the product (bold text is added later).",
+};
+
+export function buildScenePrompt(product, { style = "product", visual, role, format = "voiceover" } = {}) {
   return [
     `ONE photorealistic vertical 9:16 photo: a single frame from a TikTok Shop product video, one moment, one camera angle. Never a grid, collage, split screen, sequence or multiple panels.`,
     `Product: ${promptTitle(product.title)} — exactly as in the attached product photos: same shape, colours, materials, logo and proportions; never redesign it. Do not invent features or accessories.`,
+    `The product's own printed logo, brand name and label text stay on it exactly as on the real product — clearly visible and readable, never removed, blurred or rewritten.`,
     `Moment to show (if several actions are described, show only the most telling one): ${String(visual || ROLE_VISUAL[role] || ROLE_VISUAL.use).replace(/[.\s]+$/, "")}.`,
     styleLook(style),
+    FORMAT_CAST[format] || "",
     `Composition: the scene fills the entire frame edge to edge, sharp from top to bottom like a real phone video frame (no letterbox, no blurred or faded areas); the product and the action sit in the middle of the frame.`,
     role === "cta" ? `The product must be fully visible, sharp and attractive.` : "",
     `Realistic results only — no exaggerated or instant transformations.`,
-    `No text, letters, captions, labels, logos other than the product's own, watermarks or price tags anywhere (ignore any text in the reference photos).`,
+    `Apart from what is printed on the product itself: no text, captions, labels, logos, watermarks or price tags anywhere (shop banners and captions in the reference photos are not part of the product — leave them out).`,
   ].filter(Boolean).join("\n");
+}
+
+/**
+ * the first frame an image-to-video model (Higgsfield) animates: a clean 9:16 photo of the product made
+ * from the shop photos — shop photos are often banners full of text, which the video model then turns
+ * into garbled fake lettering, and square photos would need blurred bars.
+ */
+/** US$ the AI start frame adds to a Higgsfield clip (0 when it is made from the photo instead) */
+export const startFrameUsd = () => (process.env.HIGGSFIELD_START_FRAME === "photo" || !sceneImagesEnabled() ? 0
+  : priceUsage({ kind: "image", model: cfg().model, images: 1, size: cfg().size }).usd);
+
+export function buildStartFramePrompt(product, { style = "product", format = "voiceover" } = {}) {
+  return buildScenePrompt(product, {
+    style, format, role: "intro",
+    visual: "the opening frame of the video: the full product clearly presented in a real, attractive setting that suits it, its front with the logo / label facing the camera, hero lighting, with space around it for camera movement",
+  });
 }
 
 const parseDataUrl = (u) => {

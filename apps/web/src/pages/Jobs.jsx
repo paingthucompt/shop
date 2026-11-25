@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, creditsChanged, LANGS, LANG_FLAG } from "../api.js";
 import { t, getLang, errorText } from "../i18n.js";
+import Icon from "../icons.jsx";
 
 const WORKING = new Set(["queued", "running"]);
-const SOURCE_ICON = { photos: "📷", upload: "🎬", scenes: "🖼", ai_video: "✨", auto: "⚙️" };
+const SOURCE_ICON = { photos: "camera", upload: "upload", scenes: "image", ai_video: "sparkles", auto: "settings" };
 const locale = () => (getLang() === "my" ? "my-MM" : undefined);
 const shortLang = (l) => LANGS[l].split(" ")[0];
 
@@ -93,7 +94,7 @@ function JobDetail({ id, onStatus, onClose }) {
         <Progress job={job} />
         {WORKING.has(job.status) && <p className="muted small center">{t("jobs.wait")}</p>}
         {job.api_usd > 0 && (
-          <p className="muted small">💵 {t("cost.job", { usd: usd(job.api_usd) })}
+          <p className="muted small meta-i"><Icon name="dollar" size={14} />{t("cost.job", { usd: usd(job.api_usd) })}
             {job.api_cost.length > 0 && ` (${job.api_cost.map((c) => `${t(`cost.kind.${c.kind}`)} ${usd(c.usd)}`).join(" · ")})`}</p>
         )}
         {job.error && (
@@ -107,7 +108,7 @@ function JobDetail({ id, onStatus, onClose }) {
                 <h3>{LANG_FLAG[v.lang]} {LANGS[v.lang]} {v.duration ? <span className="muted small">· {Number(v.duration).toFixed(0)} s</span> : null}</h3>
                 <video src={v.url} controls playsInline preload="metadata" />
                 <div className="row">
-                  <a className="btn primary" href={`${v.url}&download=1`}>⬇ {t("jobs.download")}</a>
+                  <a className="btn primary" href={`${v.url}&download=1`}><Icon name="download" size={17} />{t("jobs.download")}</a>
                   {v.srt_url && <a className="btn subtle" href={`${v.srt_url}&download=1`}>{t("jobs.srt")}</a>}
                 </div>
               </div>
@@ -129,7 +130,7 @@ function CostSummary({ spend }) {
   return (
     <details className="card cost-summary">
       <summary>
-        💵 {t("cost.summary", { usd: usd(m.usd), n: m.videos })}
+        <Icon name="dollar" size={16} /> {t("cost.summary", { usd: usd(m.usd), n: m.videos })}
         {m.usd_per_video != null && <> · <strong>{t("cost.perVideo", { usd: usd(m.usd_per_video) })}</strong></>}
       </summary>
       <ul className="cost-kinds">
@@ -146,20 +147,31 @@ function CostSummary({ spend }) {
   );
 }
 
+/** one number on the Videos page, with an icon in its colour */
+function Stat({ tone, icon, n, label, title }) {
+  return (
+    <div className={`stat ${tone}`} title={title}>
+      <span className="stat-icon"><Icon name={icon} size={17} /></span>
+      <span className="stat-n">{n}</span>
+      <span className="stat-label">{label}</span>
+    </div>
+  );
+}
+
 function JobRow({ j, current }) {
   const nav = useNavigate();
   const used = j.refunded ? 0 : j.credits_charged;
   return (
     <li className={`job-card ${j.status}${current ? " current" : ""}`}>
       <Link to={`/jobs/${j.id}`} className="job-main" title={j.product_title}>
-        <span className="job-thumb">{j.image_url ? <img src={j.image_url} alt="" loading="lazy" /> : "📦"}<span className="job-flags">{j.langs.map((l) => LANG_FLAG[l]).join("")}</span></span>
+        <span className="job-thumb">{j.image_url ? <img src={j.image_url} alt="" loading="lazy" /> : <Icon name="package" size={22} />}<span className="job-flags">{j.langs.map((l) => LANG_FLAG[l]).join("")}</span></span>
         <span className="job-text">
           <span className="job-title">{j.product_title}</span>
           <span className="job-meta">
             <span>#{j.id}</span>
-            <span>{SOURCE_ICON[j.clip_source] || "⚙️"} {t(`jobs.src.${j.clip_source}`)}{j.clip_has_voice ? ` · 🗣` : ""}</span>
-            <span>{j.own_key ? `🔑 ${t("jobs.ownKey")}` : j.refunded ? t("jobs.refundedShort") : t("jobs.creditsN", { n: used })}</span>
-            {j.api_usd > 0 && <span title={t("cost.jobTitle")}>💵 {usd(j.api_usd)}</span>}
+            <span className="meta-i"><Icon name={SOURCE_ICON[j.clip_source] || "settings"} size={14} />{t(`jobs.src.${j.clip_source}`)}{j.clip_has_voice && <Icon name="mic" size={14} />}</span>
+            <span className="meta-i">{j.own_key ? <><Icon name="key" size={14} />{t("jobs.ownKey")}</> : <><Icon name="coins" size={14} />{j.refunded ? t("jobs.refundedShort") : t("jobs.creditsN", { n: used })}</>}</span>
+            {j.api_usd > 0 && <span className="meta-i" title={t("cost.jobTitle")}><Icon name="dollar" size={14} />{usd(j.api_usd)}</span>}
             <span>{when(j.created_at)}</span>
           </span>
         </span>
@@ -167,7 +179,7 @@ function JobRow({ j, current }) {
       <span className="job-side">
         {WORKING.has(j.status) ? <MiniProgress job={j} /> : <StatusBadge status={j.status} />}
         {j.status === "succeeded" && [...j.videos].sort((a, b) => j.langs.indexOf(a.lang) - j.langs.indexOf(b.lang)).map((v) => (
-          <a key={v.lang} className="btn secondary sm" href={`${v.url}&download=1`} title={t("jobs.downloadLang", { lang: LANGS[v.lang] })}>⬇ {LANG_FLAG[v.lang]} {shortLang(v.lang)}</a>
+          <a key={v.lang} className="btn secondary sm" href={`${v.url}&download=1`} title={t("jobs.downloadLang", { lang: LANGS[v.lang] })}><Icon name="download" size={15} />{LANG_FLAG[v.lang]} {shortLang(v.lang)}</a>
         ))}
         {j.status === "failed" && <button type="button" className="btn secondary sm" onClick={() => nav(`/products/${j.product_id}#step-3`)}>↻ {t("jobs.retry")}</button>}
       </span>
@@ -224,21 +236,22 @@ export default function Jobs() {
     <>
       <div className="page-head">
         <div>
+          <p className="eyebrow"><Icon name="film" size={14} />{t("nav.videos")}</p>
           <h1>{t("jobs.title")}</h1>
           <p className="muted">{t("jobs.subtitle")}</p>
         </div>
-        <Link to="/" className="btn primary">＋ {t("jobs.new")}</Link>
+        <Link to="/" className="btn primary"><Icon name="plus" size={18} />{t("jobs.new")}</Link>
       </div>
 
       {id && <JobDetail id={id} onStatus={onStatus} onClose={() => nav("/jobs")} />}
 
       {jobs?.length > 0 && (
         <div className="stats">
-          <div className="stat"><span className="stat-n ok-text">{counts.videos}</span><span className="muted small">{t("jobs.stats.videos")}</span></div>
-          <div className="stat"><span className="stat-n warn-text">{counts.working}</span><span className="muted small">{t("jobs.stats.working")}</span></div>
-          <div className="stat"><span className="stat-n bad-text">{counts.failed}</span><span className="muted small">{t("jobs.stats.failed")}</span></div>
-          <div className="stat"><span className="stat-n">{counts.credits}</span><span className="muted small">{t("jobs.stats.credits")}</span></div>
-          {spend && <div className="stat" title={t("cost.monthTitle")}><span className="stat-n">{usd(spend.month.usd)}</span><span className="muted small">{t("cost.month")}</span></div>}
+          <Stat tone="ok" icon="check" n={counts.videos} label={t("jobs.stats.videos")} />
+          <Stat tone="warn" icon="clock" n={counts.working} label={t("jobs.stats.working")} />
+          <Stat tone="bad" icon="alert" n={counts.failed} label={t("jobs.stats.failed")} />
+          <Stat tone="" icon="coins" n={counts.credits} label={t("jobs.stats.credits")} />
+          {spend && <Stat tone="info" icon="dollar" n={usd(spend.month.usd)} label={t("cost.month")} title={t("cost.monthTitle")} />}
         </div>
       )}
       {spend?.month.usd > 0 && <CostSummary spend={spend} />}
@@ -252,14 +265,17 @@ export default function Jobs() {
               </button>
             ))}
           </div>
-          <input className="search" type="search" placeholder={t("jobs.search")} value={q} onChange={(e) => setQ(e.target.value)} />
+          <label className="search-box">
+            <Icon name="search" size={17} />
+            <input type="search" placeholder={t("jobs.search")} value={q} onChange={(e) => setQ(e.target.value)} aria-label={t("jobs.search")} />
+          </label>
         </div>
       )}
 
       {!jobs && <div className="card skeleton" />}
       {jobs && !jobs.length && (
         <div className="card empty">
-          <div className="empty-icon" aria-hidden>🎬</div>
+          <div className="empty-icon" aria-hidden><Icon name="film" size={30} /></div>
           <h2>{t("jobs.emptyTitle")}</h2>
           <p className="muted">{t("jobs.emptyText")}</p>
           <Link to="/" className="btn primary">{t("jobs.toProducts")}</Link>

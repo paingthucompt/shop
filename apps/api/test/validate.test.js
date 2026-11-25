@@ -99,7 +99,10 @@ test("publicError hides internal details", () => {
 
 test("validateScript trims, drops empty lines and enforces limits", () => {
   const { script } = validateScript({ hook: "  h ", lines: ["a", " ", " b  c "], cta: "c" });
-  assert.deepEqual(script, { hook: "h", lines: ["a", "b c"], captions: ["", ""], cta: "c" });
+  assert.deepEqual(script, { hook: "h", lines: ["a", "b c"], captions: ["", ""], speakers: ["A", "A"], cta: "c" });
+  // a mini drama: who speaks stays with its line when an empty line is dropped
+  const d = validateScript({ hook: "h", lines: ["a", "", "b"], speakers: ["B", "A", "b"], cta: "c" }).script;
+  assert.deepEqual([d.lines, d.speakers], [["a", "b"], ["B", "B"]]);
   assert.match(validateScript({ hook: "h", lines: [], cta: "c" }).error, /required/);
   assert.match(validateScript({ hook: "x".repeat(SCRIPT_LIMITS.hook + 1), lines: ["a"], cta: "c" }).error, /hook/);
   assert.match(validateScript({ hook: "h", lines: Array(SCRIPT_LIMITS.maxLines + 1).fill("a"), cta: "c" }).error, /too many/);
