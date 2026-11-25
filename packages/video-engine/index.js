@@ -28,7 +28,7 @@ export function buildConfig({ clipPath, outPath, lang, script, voice = "female",
     languages: [lang],
     voices: { [lang]: VOICES[lang]?.[voice] || voice },
     rates: { [lang]: rate || (lang === "th" ? "+8%" : "+0%") },
-    // voiceover speed multiplier chosen by the user (1 = natural pace); absent → VOXCPM_SPEED for voxcpm
+    // voiceover speed multiplier chosen by the user (1 = natural pace); absent → 1
     ...(Number(speed) > 0 ? { speeds: { [lang]: Number(speed) } } : {}),
     // false: keep the clip's own voice at full volume and add no voiceover
     ...(tts === false ? { tts: false } : {}),

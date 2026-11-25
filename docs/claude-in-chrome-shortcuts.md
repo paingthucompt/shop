@@ -20,7 +20,7 @@ Photos: [ပုံ ၂–၄ ပုံ တွဲထည့် / folder: Downloads
 - Command မရေးရင် `/tiktok-shop` ကို သုံးပါမယ်။
 - **`app-voice`** (ရွေးချယ်ခွင့်): command နောက်မှာ ရေးရင် (ဥပမာ `/ugc-unboxing th,my app-voice`) ဘာသာနှစ်ခုလုံးအတွက်
   **စကားမပြော၊ စာမပါတဲ့ clip တစ်ခုတည်း** (30 credits) ပဲ ထုတ်ပါတယ်။ ပြီးရင် app ရဲ့ "Upload clip" မှာ ထည့်လိုက်ရင် app က
-  Thai / မြန်မာ voiceover (Gemini · ကိုယ့်အသံ VoxCPM2) နဲ့ caption ထည့်ပေးပါတယ် → တစ်တွဲ 60 credits အစား 30 credits။
+  Thai / မြန်မာ voiceover (Gemini / Edge) နဲ့ caption ထည့်ပေးပါတယ် → တစ်တွဲ 60 credits အစား 30 credits။
 
 ---
 

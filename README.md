@@ -58,8 +58,8 @@ npm test     # provider unit tests + ထိုင်း/မြန်မာ video
 | `CLIP_MODE=gemini`, `GEMINI_API_KEY`, `GEMINI_VIDEO_*` | aistudio.google.com → API keys (paid tier) | Seedance အစား Gemini Omni video (၃–၁၅ s)။ စမ်းရန်: `node --env-file=.env packages/providers/scripts/try-gemini-video.mjs ပုံ.jpg` (≈ $0.10) |
 | `TTS_PROVIDER=azure`, `AZURE_SPEECH_KEY` | Azure AI Speech | Production မှာ ဒါကိုပဲ သုံးပါ။ `edge` က တရားဝင်မဟုတ်လို့ prototype အတွက်ပဲ |
 | `TTS_PROVIDER=gemini`, `GEMINI_TTS_VOICE` | `GEMINI_API_KEY` တစ်ခုတည်း | သဘာဝအကျဆုံး (TikTok creator လို ပြောပုံ)၊ ထိုင်း+မြန်မာ နှစ်ခုလုံး ရ၊ video တစ်ခု ≈ $0.003 |
+| `GEMINI_TTS_VOICE_TH` / `_MY` = ကိုယ်ပိုင် `voice_<id>` | `npm run voice -- design my "…"` (ဖော်ပြချက်နဲ့ ဖန်တီး) / `clone` (ကိုယ့်အသံ + သဘောတူညီချက် အသံဖိုင်) | Google ဘက်မှာ သိမ်းလို့ Mac မလေးပါ။ စမ်းနားထောင်: `npm run voice -- say <id> my "…"`၊ ထိုင်း native voice များ: `npm run voice -- list th` |
 | `TTS_PROVIDER=edge`, `EDGE_TTS_BIN` | `brew install pipx && pipx install edge-tts` | အခမဲ့ (key မလို)။ `EDGE_TTS_BIN=$HOME/.local/bin/edge-tts`။ ဆက်တိုက်ခေါ်ရင် ခဏ throttle ဖြစ်တတ်လို့ engine က backoff နဲ့ retry ပြီး ဘာသာတူ အခြား voice ကို ပြောင်းသုံးပါတယ် |
-| `TTS_PROVIDER=voxcpm` (သို့) `TTS_PROVIDER_MY=voxcpm` | `tools/voxcpm-server.py` (Mac ပေါ်မှာ local, Python 3.12) | အခမဲ့၊ ကိုယ့်အသံကို clone လုပ်လို့ရ (`VOXCPM_REF_WAV`)။ Model 2B (~5 GB) ဖြစ်လို့ ကိုယ်တိုင်သုံးတဲ့ Mac မှာပဲ — Cloud Run (1 vCPU / 2 GiB) မှာ မ run နိုင်။ `TTS_PROVIDER_TH` / `TTS_PROVIDER_MY` နဲ့ ဘာသာအလိုက် ခွဲရွေးလို့ရ |
 | `SHOPEE_APP_ID`, `SHOPEE_SECRET` | affiliate.shopee.co.th → Open API | Shopee link ထည့်ရင် affiliate short link အလိုအလျောက် လုပ်ပေးပါတယ် |
 
 ## Credit စနစ် (SaaS)

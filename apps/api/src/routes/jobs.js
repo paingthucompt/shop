@@ -31,19 +31,11 @@ async function loadJob(userId, id) {
   };
 }
 
-/** TTS_PROVIDER_TH / _MY override TTS_PROVIDER per language → "gemini", or "th:gemini · my:voxcpm" when they differ */
+/** TTS_PROVIDER_TH / _MY override TTS_PROVIDER per language → "gemini", or "th:gemini · my:edge" when they differ */
 function voiceoverLabel(langs) {
   const of = (l) => String(process.env[`TTS_PROVIDER_${l.toUpperCase()}`] || process.env.TTS_PROVIDER || "none").toLowerCase();
   const all = [...new Set(langs.map(of))];
   return all.length === 1 ? all[0] : langs.map((l) => `${l}:${of(l)}`).join(" · ");
-}
-
-/** VOXCPM_SPEED_MY / VOXCPM_SPEED for the local VoxCPM voice, otherwise the voice's natural pace (1) */
-function defaultVoiceSpeed(lang) {
-  const provider = String(process.env[`TTS_PROVIDER_${lang.toUpperCase()}`] || process.env.TTS_PROVIDER || "none").toLowerCase();
-  if (provider !== "voxcpm") return 1;
-  const n = Number(process.env[`VOXCPM_SPEED_${lang.toUpperCase()}`] || process.env.VOXCPM_SPEED || 1);
-  return Number.isFinite(n) && n >= VOICE_SPEED.min && n <= VOICE_SPEED.max ? n : 1;
 }
 
 /** everything a user must see before spending: credits, what Seedance will be asked, output settings */
@@ -102,7 +94,7 @@ async function buildQuote(userId, productId, langs, style = "product", clipSourc
     },
     voiceover: voiceoverLabel(langs),
     // the speed slider starts here (the user can change it per video before confirming)
-    voice_speed_default: Object.fromEntries(langs.map((l) => [l, defaultVoiceSpeed(l)])),
+    voice_speed_default: Object.fromEntries(langs.map((l) => [l, 1])),
     voice_speed_range: VOICE_SPEED,
   };
 }

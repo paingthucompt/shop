@@ -62,18 +62,46 @@ export function findVideo(node) {
 
 const FAILED = new Set(["failed", "cancelled", "canceled", "expired", "incomplete"]);
 
-async function call(path, init = {}) {
+/** ms to wait before retry `attempt` (1-based): Retry-After header, else 0.5 s doubling up to 8 s, with jitter */
+export function retryDelayMs(attempt, res) {
+  const after = Number(res?.headers?.get?.("retry-after"));
+  if (after > 0) return Math.min(after, 30) * 1000;
+  const base = Math.min(8000, 500 * 2 ** (attempt - 1));
+  return base / 2 + Math.random() * (base / 2);
+}
+
+/**
+ * One API call. Reads (GET, e.g. polling an interaction) retry on 429 / 5xx / network errors with
+ * backoff for up to ~30 s, like Google's gemini-api CLI does for interaction status. Creating an
+ * interaction (POST) is never retried: a request that reached Google may already be generating (and billed).
+ */
+async function call(path, init = {}, { retryForMs = 30_000 } = {}) {
   const c = cfg();
   if (!c.apiKey) throw new Error("GEMINI_API_KEY is not set");
-  const res = await fetch(`${c.baseUrl}${path}`, {
-    ...init,
-    headers: { "x-goog-api-key": c.apiKey, "Content-Type": "application/json", ...(init.headers || {}) },
-  });
-  const text = await res.text();
-  let json;
-  try { json = JSON.parse(text); } catch { json = { raw: text }; }
-  if (!res.ok) throw new Error(`Gemini ${res.status}: ${json?.error?.message || text.slice(0, 300)}`);
-  return json;
+  const retry = (init.method || "GET").toUpperCase() === "GET";
+  const start = Date.now();
+  for (let attempt = 1; ; attempt++) {
+    let res;
+    try {
+      res = await fetch(`${c.baseUrl}${path}`, {
+        ...init,
+        headers: { "x-goog-api-key": c.apiKey, "Content-Type": "application/json", ...(init.headers || {}) },
+      });
+    } catch (err) {
+      if (!retry || Date.now() - start > retryForMs) throw err;
+      await new Promise((r) => setTimeout(r, retryDelayMs(attempt)));
+      continue;
+    }
+    const text = await res.text();
+    if (retry && (res.status === 429 || res.status >= 500) && Date.now() - start <= retryForMs) {
+      await new Promise((r) => setTimeout(r, retryDelayMs(attempt, res)));
+      continue;
+    }
+    let json;
+    try { json = JSON.parse(text); } catch { json = { raw: text }; }
+    if (!res.ok) throw new Error(`Gemini ${res.status}: ${json?.error?.message || text.slice(0, 300)}`);
+    return json;
+  }
 }
 
 async function videoBytes(video) {

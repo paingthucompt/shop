@@ -124,13 +124,13 @@ test("scene clip: each scene for its own seconds, long scenes split in two shots
 
 test("voice provider per language: TTS_PROVIDER_TH / _MY override TTS_PROVIDER", async () => {
   const { ttsProviderFor, voiceEnabled } = await import("../index.js");
-  const env = { TTS_PROVIDER: "gemini", TTS_PROVIDER_MY: "VoxCPM" };
+  const env = { TTS_PROVIDER: "gemini", TTS_PROVIDER_MY: "Edge" };
   assert.equal(ttsProviderFor("th", env), "gemini");
-  assert.equal(ttsProviderFor("my", env), "voxcpm");
+  assert.equal(ttsProviderFor("my", env), "edge");
   assert.equal(ttsProviderFor("th", {}), "edge"); // engine default
   assert.equal(voiceEnabled(["th", "my"], {}), false); // worker default: no voice
-  assert.equal(voiceEnabled(["th"], { TTS_PROVIDER_MY: "voxcpm" }), false);
-  assert.equal(voiceEnabled(["th", "my"], { TTS_PROVIDER_MY: "voxcpm" }), true);
+  assert.equal(voiceEnabled(["th"], { TTS_PROVIDER_MY: "edge" }), false);
+  assert.equal(voiceEnabled(["th", "my"], { TTS_PROVIDER_MY: "edge" }), true);
 });
 
 test("buildConfig: the chosen voice speed goes into the engine config; none → no speeds key", () => {

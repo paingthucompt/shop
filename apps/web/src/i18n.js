@@ -238,7 +238,6 @@ export const DICT = {
     "voice.edge": "Free AI voice (Edge)",
     "voice.azure": "AI voice (Azure)",
     "voice.gemini": "Natural AI voice (Gemini)",
-    "voice.voxcpm": "Your own voice (VoxCPM, this computer)",
 
     "jobs.title": "Videos",
     "jobs.subtitle": "Videos being made and finished ones, newest first.",
@@ -534,7 +533,6 @@ export const DICT = {
     "voice.edge": "အခမဲ့ AI အသံ (Edge)",
     "voice.azure": "AI အသံ (Azure)",
     "voice.gemini": "သဘာဝကျတဲ့ AI အသံ (Gemini)",
-    "voice.voxcpm": "ကိုယ်ပိုင်အသံ (VoxCPM၊ ဒီကွန်ပျူတာ)",
 
     "jobs.title": "ဗီဒီယိုများ",
     "jobs.subtitle": "ထုတ်နေဆဲနဲ့ ပြီးသွားတဲ့ ဗီဒီယိုများ၊ အသစ်ဆုံး အပေါ်မှာ။",

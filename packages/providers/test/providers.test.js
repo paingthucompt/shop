@@ -421,3 +421,12 @@ test("storyboard video prompt: silent by default; speaking = presenter says the 
   assert.match(my, /Burmese \(Myanmar\)/);
   assert.match(my, /Yangon accent/);
 });
+
+test("gemini-video retryDelayMs: Retry-After wins, else 0.5 s doubling capped at 8 s", async () => {
+  const { retryDelayMs } = await import("../src/gemini-video.js");
+  assert.equal(retryDelayMs(1, { headers: new Headers({ "retry-after": "3" }) }), 3000);
+  for (const [attempt, max] of [[1, 500], [3, 2000], [9, 8000]]) {
+    const ms = retryDelayMs(attempt);
+    assert.ok(ms >= max / 2 && ms <= max, `${attempt}: ${ms}`);
+  }
+});

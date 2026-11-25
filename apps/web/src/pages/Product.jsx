@@ -235,8 +235,8 @@ function FlowPanel({ prompts, talking, onTalking, clip, busy, onUpload, onRemove
 
 // ---------------------------------------------------------------- step 3: confirm and create
 
-const VOICE_KEYS = ["none", "edge", "azure", "gemini", "voxcpm"];
-/** "gemini" or "th:gemini · my:voxcpm" → readable text */
+const VOICE_KEYS = ["none", "edge", "azure", "gemini"];
+/** "gemini" or "th:gemini · my:edge" → readable text */
 function voiceText(v) {
   if (VOICE_KEYS.includes(v)) return t(`voice.${v}`);
   return String(v).split(" · ").map((part) => { const [l, p] = part.split(":"); return `${LANG_FLAG[l] || l} ${VOICE_KEYS.includes(p) ? t(`voice.${p}`) : p}`; }).join(" · ");
