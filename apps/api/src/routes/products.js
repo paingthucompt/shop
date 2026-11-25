@@ -6,14 +6,18 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import crypto from "node:crypto";
 import { query, tx, changeCredits } from "@app/db";
-import { llm, shopee, seedance, flowPrompt, sceneImages, productLink } from "@app/providers";
+import { llm, shopee, seedance, flowPrompt, sceneImages, productLink, usage, keys, apiErrors } from "@app/providers";
 import { probeClip } from "@app/video-engine";
-import { ah, requireAuth, STORAGE_DIR, mediaUrl } from "../lib.js";
-import { httpError, parseId, parseLangs, parseAngle, parseStyle, isShopeeUrl } from "../validate.js";
+import { ah, requireAuth, withUserKeys, requireKey, STORAGE_DIR, mediaUrl } from "../lib.js";
+import { httpError, parseId, parseLangs, parseAngle, parseStyle, isShopeeUrl, publicError } from "../validate.js";
 import { validateScript, clampScript } from "../script-rules.js";
 
 const r = Router();
 r.use(requireAuth);
+r.use(withUserKeys); // the user's own AI keys, if they added them
+// cost tracking: AI calls made while handling a request are recorded for this user (and product)
+r.use((req, _res, next) => usage.withUsage({ userId: req.userId }, next));
+r.param("id", (_req, _res, next, id) => usage.withUsage({ productId: Number(id) || null }, next));
 
 // extension comes from the (filtered) mime type, never from the client's file name
 const IMG_EXT = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp" };
@@ -285,6 +289,7 @@ const scenesOn = () => /^(on|1|true|yes)$/i.test(process.env.SCENE_IMAGES || "")
  * → { scripts: { th, my }, clip_prompt: { style, seconds, shots, prompt, mock } }
  */
 r.post("/:id/scripts/generate", aiLimiter, ah(async (req, res) => {
+  requireKey();
   const p = await ownProduct(req.userId, req.params.id);
   const langs = parseLangs(req.body.langs);
   const angle = parseAngle(req.body.angle);
@@ -294,6 +299,9 @@ r.post("/:id/scripts/generate", aiLimiter, ah(async (req, res) => {
     const s = await llm.generateScript(p, lang, { seconds, angle }).catch((e) => {
       if (e.status) throw e; // a script problem the user can act on
       console.error(`[scripts] ${lang}: ${e.message}`);
+      // the API key / its project is the problem (common with users' own keys) → say what to fix
+      const code = apiErrors.errorCode(e.message);
+      if (apiErrors.isKeyProblem(code)) throw Object.assign(httpError(400, publicError(e.message)), { code, expose: true });
       throw Object.assign(httpError(503, "the AI writer is busy or unreachable — try again in a minute"), { expose: true });
     });
     return [lang, { ...(await saveScript(p.id, lang, clampScript(s), angle)), mock: !!s.mock }];
@@ -394,9 +402,10 @@ async function settleLimited(items, limit, fn) {
 }
 
 // changeCredits throws 402 "Not enough credits" when the balance is too low
-const chargeScenes = (userId, productId, count) =>
-  tx((c) => changeCredits(c, userId, -count * SCENE_COST(), "scenes", `product:${productId}`));
-const refundScenes = (userId, productId, count) => count > 0
+// with the user's own Gemini key the images are on their Google bill → no credits
+const chargeScenes = (userId, productId, count) => (keys.usingOwnKeys() ? null
+  : tx((c) => changeCredits(c, userId, -count * SCENE_COST(), "scenes", `product:${productId}`)));
+const refundScenes = (userId, productId, count) => count > 0 && !keys.usingOwnKeys()
   ? tx((c) => changeCredits(c, userId, count * SCENE_COST(), "refund", `scenes:product:${productId}`)) : null;
 
 async function withSceneLock(productId, fn) {
@@ -407,6 +416,7 @@ async function withSceneLock(productId, fn) {
 
 /** make all scene images from the scripts + Flow shot list. → product */
 r.post("/:id/scenes", aiLimiter, ah(async (req, res) => {
+  requireKey();
   const p = await ownProduct(req.userId, req.params.id);
   if (!scenesOn()) throw httpError(403, "AI scene images are turned off (SCENE_IMAGES=on to enable) — make the storyboard in Google Flow instead");
   if (await hasActiveJob(p.id)) throw httpError(409, BUSY);
@@ -434,6 +444,7 @@ r.post("/:id/scenes", aiLimiter, ah(async (req, res) => {
 
 /** remake one scene image (1 scene's credits). → product */
 r.post("/:id/scenes/:n", aiLimiter, ah(async (req, res) => {
+  requireKey();
   const p = await ownProduct(req.userId, req.params.id);
   if (await hasActiveJob(p.id)) throw httpError(409, BUSY);
   if (!scenesOn()) throw httpError(403, "AI scene images are turned off (SCENE_IMAGES=on to enable)");

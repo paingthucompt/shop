@@ -7,11 +7,12 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { basename, join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { query, failJob } from "@app/db";
-import { seedance, geminiVideo } from "@app/providers";
+import { query, failJob, recordUsage, loadUserKeys } from "@app/db";
+import { seedance, geminiVideo, usage, keys } from "@app/providers";
 import { renderVideo, makePhotoClip, makeSceneClip, normalizeClip, voiceEnabled } from "@app/video-engine";
 
 const QUEUE_NAME = "video-jobs";
+usage.setUsageSink(recordUsage);
 const STORAGE_DIR = resolve(process.env.STORAGE_DIR || "./storage");
 const SAMPLE_CLIP = resolve(dirname(fileURLToPath(import.meta.url)), "../../../samples/sample-product-clip.mp4");
 
@@ -88,6 +89,8 @@ async function makeClip(job, product, dir) {
       onStatus: (s) => console.log(`[job ${job.id}] gemini ${s}`),
     });
     writeFileSync(clip, bytes);
+    const g = geminiVideo.geminiSettings();
+    usage.reportUsage({ kind: "video", provider: "gemini", model: g.model, seconds: g.duration, resolution: g.resolution });
   } else if (mode === "sample") {
     console.warn(`[job ${job.id}] CLIP_MODE=sample → using samples/sample-product-clip.mp4`);
     copyFileSync(SAMPLE_CLIP, clip);
@@ -100,6 +103,8 @@ async function makeClip(job, product, dir) {
     }
     const url = await seedance.waitForTask(taskId, { onStatus: (s) => console.log(`[job ${job.id}] seedance ${s}`) });
     await download(url, clip);
+    const s = seedance.clipSettings("seedance");
+    usage.reportUsage({ kind: "video", provider: "seedance", model: s.model, seconds: s.duration, resolution: s.resolution });
   }
   await setJob(job.id, { clip_path: clip });
   return clip;
@@ -134,6 +139,8 @@ async function processJob(jobId) {
       // the clip already speaks (Flow presenter with lip-sync): keep its audio, add captions only
       ...(job.clip_has_voice ? { tts: false, productVolume: 1 } : {}),
       onLog: (l) => process.env.DEBUG_ENGINE && process.stdout.write(l),
+      onUsage: (u) => usage.reportUsage(u),
+      env: keys.env(), // the user's own Gemini key for the voiceover, when the job uses their keys
     });
     for (const k of ["path", "srt"]) {
       if (!r[k]) continue;
@@ -163,7 +170,16 @@ const worker = new Worker(
   async (bullJob) => {
     const { jobId } = bullJob.data;
     try {
-      await processJob(jobId);
+      // every API call made for this job is recorded against it (cost tracking)
+      const { rows: [j] } = await query("SELECT user_id, product_id, own_key FROM video_jobs WHERE id = $1", [jobId]);
+      // a job made with the user's own keys (no credits charged) must never fall back to the server's keys;
+      // a job paid with credits always uses the server's keys
+      let ctx = {};
+      if (j?.own_key) {
+        ctx = keys.userKeyContext(await loadUserKeys(j.user_id));
+        if (!ctx.gemini) throw new Error("your Gemini API key was removed — add it again in Settings, then make the video again");
+      }
+      await keys.withKeys(ctx, () => usage.withUsage({ userId: j?.user_id, productId: j?.product_id, jobId }, () => processJob(jobId)));
     } catch (err) {
       await fail(jobId, err);
       throw err;

@@ -2,6 +2,9 @@
 // Uses any OpenAI-compatible Chat Completions endpoint (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL).
 // With LLM_API_KEY empty it uses GEMINI_API_KEY through Gemini's OpenAI-compatible endpoint.
 import { buildClipPrompt, buildShotRequest, clipSeconds, parseShots } from "./flow-prompt.js";
+import { reportUsage } from "./usage.js";
+import { env as keyEnv } from "./keys.js";
+import { providerError } from "./api-errors.js";
 
 const LANG_NAME = { th: "Thai (ภาษาไทย)", my: "Burmese (မြန်မာဘာသာ, Unicode)" };
 const CTA_HINT = {
@@ -119,7 +122,7 @@ const listOf = (v) => String(v || "").split(",").map((x) => x.trim()).filter(Boo
  *   else GEMINI_API_KEY → Gemini; a leftover non-Gemini LLM_BASE_URL / LLM_MODEL is ignored so the
  *                         Gemini key is never sent to another provider
  */
-export function llmConfig(env = process.env, lang) {
+export function llmConfig(env = keyEnv(), lang) {
   const own = lang ? env[`LLM_MODEL_${String(lang).toUpperCase()}`] : "";
   if (env.LLM_API_KEY) {
     return {
@@ -141,8 +144,8 @@ export function llmConfig(env = process.env, lang) {
 const llmEnabled = () => Boolean(llmConfig());
 
 /** one user message → the model's text reply */
-async function chat(content, temperature, lang) {
-  const { key: LLM_API_KEY, baseUrl: LLM_BASE_URL, model: main, fallbacks = [] } = llmConfig(process.env, lang);
+async function chat(content, temperature, lang, kind = "text") {
+  const { key: LLM_API_KEY, baseUrl: LLM_BASE_URL, model: main, fallbacks = [] } = llmConfig(keyEnv(), lang);
   // providers answer 429/503 ("high demand") in bursts and sometimes hang: cap each try, and move on to
   // the next fallback model (or retry the last one) instead of waiting minutes on a busy model
   const timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 40_000);
@@ -159,9 +162,14 @@ async function chat(content, temperature, lang) {
       });
       if (res.ok) {
         const data = await res.json();
+        // cost tracking: OpenAI-compatible replies carry token counts in `usage`
+        reportUsage({
+          kind, provider: /googleapis\.com/.test(LLM_BASE_URL) ? "gemini" : new URL(LLM_BASE_URL).hostname, model: LLM_MODEL, // the requested id: the price table knows aliases like gemini-flash-lite-latest
+          input_tokens: data.usage?.prompt_tokens ?? null, output_tokens: data.usage?.completion_tokens ?? null,
+        });
         return data.choices?.[0]?.message?.content || "";
       }
-      last = `LLM ${res.status} (${LLM_MODEL}): ${(await res.text()).slice(0, 300)}`;
+      last = `${providerError("LLM", res.status, await res.text())} (${LLM_MODEL})`;
       if (res.status !== 429 && res.status < 500) break; // bad key / bad request: retrying won't help
     } catch (err) {
       last = err.name === "TimeoutError" ? `LLM timed out after ${timeoutMs / 1000}s (${LLM_MODEL})` : `LLM ${err.message}`;
@@ -195,7 +203,7 @@ export async function englishProduct(product) {
     `Name: ${product.title}`,
     product.description ? `Details: ${String(product.description).slice(0, 1500)}` : "",
     `Return ONLY JSON: {"title": "...", "description": "..."}`,
-  ].filter(Boolean).join("\n"), 0.2);
+  ].filter(Boolean).join("\n"), 0.2, undefined, "translate");
   const m = reply.match(/\{[\s\S]*\}/);
   const j = m ? JSON.parse(m[0]) : null;
   if (!j || typeof j.title !== "string" || !j.title.trim()) throw new Error("no translation");
@@ -234,7 +242,7 @@ export async function generateScript(product, lang, { seconds = 10, angle = "aut
       ? `\n\nYour previous answer mixed in letters of another language in: ${bad.map((w) => `"${w}"`).join(", ")}. ` +
         `Write those words fully in ${LANG_NAME[lang]} letters (translate them; Latin brand names and digits are fine). Use NO other script.`
       : "";
-    script = parseScript(await chat(prompt + fix, attempt === 1 ? 0.8 : 0.5, lang));
+    script = parseScript(await chat(prompt + fix, attempt === 1 ? 0.8 : 0.5, lang, "script"));
     bad = foreignWords(script, lang);
     if (!bad.length) return withSafeCta(script, lang);
     console.warn(`[llm] ${lang} script has foreign letters (${bad.join(" ")}) — asking again (${attempt}/3)`);
@@ -251,6 +259,6 @@ export async function generateClipPrompt(product, { style = "product", scripts =
   const seconds = clipSeconds(scripts);
   const script = scripts.my || scripts.th;
   let shots = null;
-  if (llmEnabled() && script) shots = parseShots(await chat(buildShotRequest(product, { style, seconds, script }), 0.7));
+  if (llmEnabled() && script) shots = parseShots(await chat(buildShotRequest(product, { style, seconds, script }), 0.7, undefined, "clip_prompt"));
   return { style, seconds, shots, prompt: buildClipPrompt(product, { style, seconds, shots }), mock: !shots };
 }

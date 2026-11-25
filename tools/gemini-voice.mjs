@@ -5,6 +5,7 @@
 //   npm run voice -- design my "A warm young Burmese woman, friendly online seller, clear and lively"
 //   npm run voice -- clone  my --source me.wav --consent consent.wav     (your own voice; both recordings by you)
 //   npm run voice -- say    voice_abc123 my "မင်္ဂလာပါ ရှင့်"            → samples/voice_abc123-my.wav
+//   npm run voice -- say    Leda th --video "…"      as in the videos (seller style note) → samples/Leda-th-video.wav
 //   npm run voice -- list                your custom voices
 //   npm run voice -- list th             every voice for Thai (incl. Google's, e.g. th-th-podcaster-1)
 //   npm run voice -- delete voice_abc123
@@ -14,7 +15,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { extname, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { geminiAudio, GEMINI_TTS_LANGUAGE } from "../packages/video-engine/gemini-audio.js";
+import { geminiAudio, GEMINI_TTS_LANGUAGE, GEMINI_STYLE } from "../packages/video-engine/gemini-audio.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const BASE = (process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "");
@@ -54,17 +55,19 @@ async function create(lang, voice) {
   console.log(`  try it:       npm run voice -- say ${id} ${lang} "…"`);
 }
 
-async function say(id, lang, text) {
+/** video: add the same style note the videos use (GEMINI_TTS_STYLE or the seller style per language) */
+async function say(id, lang, text, video = false) {
+  const style = video && (process.env.GEMINI_TTS_STYLE || GEMINI_STYLE[lang]);
   const body = {
     model: process.env.GEMINI_TTS_MODEL || "gemini-3.8-flash-tts",
-    input: [{ type: "user_input", content: [{ type: "text", text }] }],
+    input: [{ type: "user_input", content: [{ type: "text", text, ...(style ? { annotations: [{ type: "speech_metadata", style }] } : {}) }] }],
     response_format: { type: "audio" },
     generation_config: { speech_config: [{ voice: voiceId(id), language: language(lang) }] },
   };
   const out = geminiAudio(await api("/interactions", { method: "POST", body: JSON.stringify(body) }));
   if (!out) throw new Error("no audio in the reply");
   mkdirSync(join(ROOT, "samples"), { recursive: true });
-  const file = join(ROOT, "samples", `${voiceId(id)}-${lang}.${out.ext}`);
+  const file = join(ROOT, "samples", `${voiceId(id)}-${lang}${video ? "-video" : ""}.${out.ext}`);
   writeFileSync(file, out.audio);
   console.log(file);
 }
@@ -93,15 +96,16 @@ try {
     if (!source || !consent) throw new Error("clone needs --source <your voice recording> and --consent <your consent recording>");
     await create(args[0], { type: "replicated", replicated: { source_audio: audioFile(source), consent_audio: audioFile(consent) } });
   } else if (cmd === "say" && args.length >= 3) {
-    const [id, lang, ...words] = args;
-    await say(id, lang, words.join(" "));
+    const video = args.includes("--video");
+    const [id, lang, ...words] = args.filter((a) => a !== "--video");
+    await say(id, lang, words.join(" "), video);
   } else if (cmd === "list") {
     await list(args[0]);
   } else if (cmd === "delete" && args[0]) {
     await api(`/voices/${encodeURIComponent(voiceId(args[0]))}`, { method: "DELETE" });
     console.log(`deleted ${voiceId(args[0])}`);
   } else {
-    console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 14).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+    console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 15).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
     process.exitCode = cmd ? 2 : 0;
   }
 } catch (err) {

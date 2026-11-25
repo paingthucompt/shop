@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, creditsChanged, LANGS, LANG_FLAG } from "../api.js";
-import { t, getLang } from "../i18n.js";
+import { t, getLang, errorText } from "../i18n.js";
 
 const WORKING = new Set(["queued", "running"]);
 const SOURCE_ICON = { photos: "📷", upload: "🎬", scenes: "🖼", ai_video: "✨", auto: "⚙️" };
@@ -92,7 +92,14 @@ function JobDetail({ id, onStatus, onClose }) {
         </div>
         <Progress job={job} />
         {WORKING.has(job.status) && <p className="muted small center">{t("jobs.wait")}</p>}
-        {job.error && <p className="alert bad">{job.error}{job.refunded ? ` — ${t("jobs.refunded", { n: job.credits_charged })}` : ""}</p>}
+        {job.api_usd > 0 && (
+          <p className="muted small">💵 {t("cost.job", { usd: usd(job.api_usd) })}
+            {job.api_cost.length > 0 && ` (${job.api_cost.map((c) => `${t(`cost.kind.${c.kind}`)} ${usd(c.usd)}`).join(" · ")})`}</p>
+        )}
+        {job.error && (
+          <p className="alert bad">{errorText(job.error_code, job.error)}{job.refunded ? ` — ${t("jobs.refunded", { n: job.credits_charged })}` : ""}
+            {job.error_code?.startsWith("key_") && <> <Link to="/settings">{t("err.openSettings")} →</Link></>}</p>
+        )}
         {job.videos.length > 0 && (
           <div className="videos">
             {job.videos.map((v) => (
@@ -113,6 +120,32 @@ function JobDetail({ id, onStatus, onClose }) {
   );
 }
 
+/** US$ with enough digits for cents and fractions of a cent */
+const usd = (n) => `$${Number(n) >= 1 ? Number(n).toFixed(2) : Number(n).toFixed(3)}`;
+
+/** this month's API spend: per video, by kind, and the previous months */
+function CostSummary({ spend }) {
+  const m = spend.month;
+  return (
+    <details className="card cost-summary">
+      <summary>
+        💵 {t("cost.summary", { usd: usd(m.usd), n: m.videos })}
+        {m.usd_per_video != null && <> · <strong>{t("cost.perVideo", { usd: usd(m.usd_per_video) })}</strong></>}
+      </summary>
+      <ul className="cost-kinds">
+        {m.by_kind.map((k) => (
+          <li key={k.kind}><span>{t(`cost.kind.${k.kind}`)}</span><span className="muted small">× {k.calls}</span><span>{usd(k.usd)}{k.unpriced ? " *" : ""}</span></li>
+        ))}
+      </ul>
+      {m.unpriced_calls > 0 && <p className="muted small">* {t("cost.unpriced", { n: m.unpriced_calls })}</p>}
+      {spend.months.length > 1 && (
+        <p className="muted small">{spend.months.map((x) => `${x.month}: ${usd(x.usd)} (${x.videos})`).join(" · ")}</p>
+      )}
+      <p className="muted small">{t("cost.note")}</p>
+    </details>
+  );
+}
+
 function JobRow({ j, current }) {
   const nav = useNavigate();
   const used = j.refunded ? 0 : j.credits_charged;
@@ -125,7 +158,8 @@ function JobRow({ j, current }) {
           <span className="job-meta">
             <span>#{j.id}</span>
             <span>{SOURCE_ICON[j.clip_source] || "⚙️"} {t(`jobs.src.${j.clip_source}`)}{j.clip_has_voice ? ` · 🗣` : ""}</span>
-            <span>{j.refunded ? t("jobs.refundedShort") : t("jobs.creditsN", { n: used })}</span>
+            <span>{j.own_key ? `🔑 ${t("jobs.ownKey")}` : j.refunded ? t("jobs.refundedShort") : t("jobs.creditsN", { n: used })}</span>
+            {j.api_usd > 0 && <span title={t("cost.jobTitle")}>💵 {usd(j.api_usd)}</span>}
             <span>{when(j.created_at)}</span>
           </span>
         </span>
@@ -147,6 +181,8 @@ export default function Jobs() {
   const [jobs, setJobs] = useState(null);
   const [filter, setFilter] = useState("all");
   const [q, setQ] = useState("");
+  const [spend, setSpend] = useState(null);
+  useEffect(() => { api("/usage").then(setSpend).catch(() => setSpend(null)); }, [id]);
 
   // the list refreshes itself while something is still being made
   useEffect(() => {
@@ -202,8 +238,10 @@ export default function Jobs() {
           <div className="stat"><span className="stat-n warn-text">{counts.working}</span><span className="muted small">{t("jobs.stats.working")}</span></div>
           <div className="stat"><span className="stat-n bad-text">{counts.failed}</span><span className="muted small">{t("jobs.stats.failed")}</span></div>
           <div className="stat"><span className="stat-n">{counts.credits}</span><span className="muted small">{t("jobs.stats.credits")}</span></div>
+          {spend && <div className="stat" title={t("cost.monthTitle")}><span className="stat-n">{usd(spend.month.usd)}</span><span className="muted small">{t("cost.month")}</span></div>}
         </div>
       )}
+      {spend?.month.usd > 0 && <CostSummary spend={spend} />}
 
       {jobs?.length > 0 && (
         <div className="toolbar">

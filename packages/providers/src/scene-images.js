@@ -2,11 +2,14 @@
 // (Nano Banana 2) from the product photos as references. ~US$0.067 per 1K image (measured 2026-11-20:
 // 1,120 output image tokens). No text in the images — the app adds Thai / Myanmar captions itself.
 import { styleLook } from "./seedance.js";
+import { reportUsage, geminiTokens } from "./usage.js";
 import { promptTitle, storyboardPanels } from "./flow-prompt.js";
+import { env as keyEnv } from "./keys.js";
+import { providerError } from "./api-errors.js";
 
 const cfg = () => ({
   baseUrl: (process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, ""),
-  apiKey: process.env.GEMINI_API_KEY,
+  apiKey: keyEnv().GEMINI_API_KEY,
   model: process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image",
   size: process.env.GEMINI_IMAGE_SIZE || "1K",
 });
@@ -99,9 +102,10 @@ export async function generateSceneImage(prompt, refImages, { timeoutMs = 120_00
         const reply = JSON.parse(text);
         const img = findImage(reply);
         if (!img) throw new Error(`Gemini image: no image returned (${reply?.candidates?.[0]?.finishReason || reply?.promptFeedback?.blockReason || "unknown"})`);
+        reportUsage({ kind: "image", provider: "gemini", model: c.model, images: 1, size: c.size, ...geminiTokens(reply.usageMetadata) });
         return { ...img, model: c.model, usage: reply.usageMetadata || null };
       }
-      last = `Gemini image ${res.status}: ${text.slice(0, 300)}`;
+      last = providerError("Gemini image", res.status, text);
       if (res.status !== 429 && res.status < 500) break;
     } catch (err) {
       if (/no image returned/.test(err.message)) throw err;

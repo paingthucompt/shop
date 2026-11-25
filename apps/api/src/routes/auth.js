@@ -42,7 +42,9 @@ r.post("/login", limiter, ah(async (req, res) => {
 }));
 
 r.get("/me", requireAuth, ah(async (req, res) => {
-  const { rows } = await query("SELECT id, email, name, credits, created_at FROM users WHERE id = $1", [req.userId]);
+  const { rows } = await query(`SELECT id, email, name, credits, created_at,
+            EXISTS (SELECT 1 FROM user_api_keys k WHERE k.user_id = users.id AND k.provider = 'gemini') AS own_key
+     FROM users WHERE id = $1`, [req.userId]);
   if (!rows[0]) return res.status(404).json({ error: "user not found" });
   res.json(rows[0]);
 }));

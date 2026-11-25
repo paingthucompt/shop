@@ -5,3 +5,7 @@ export * as flowPrompt from "./src/flow-prompt.js";
 export * as sceneImages from "./src/scene-images.js";
 export * as shopee from "./src/shopee.js";
 export * as productLink from "./src/product-link.js";
+export * as pricing from "./src/pricing.js";
+export * as usage from "./src/usage.js";
+export * as keys from "./src/keys.js";
+export * as apiErrors from "./src/api-errors.js";

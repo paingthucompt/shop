@@ -454,3 +454,34 @@ test("withSafeCta: a CTA that doesn't mention the basket gets the known-good phr
   assert.equal(withSafeCta({ cta: "အောက်က ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါနော်။" }, "my").cta, "အောက်က ခြင်းဝါလေးကို နှိပ်ပြီး ဝယ်လိုက်ပါနော်။");
   assert.equal(withSafeCta({ cta: "สั่งเลย" }, "th").cta, "กดตะกร้าเหลืองได้เลย");
 });
+
+test("pricing: tokens, per-second video, per image, dated price changes and unknown models", async () => {
+  const { priceUsage, estimateClipUsd } = await import("../src/pricing.js");
+  const nov = new Date("2026-11-25T00:00:00Z"), jan = new Date("2027-01-02T00:00:00Z");
+  // 1000 in + 500 out on gemini-3.6-flash: (1000 × 0.75 + 500 × 3.75) / 1M
+  assert.deepEqual(priceUsage({ kind: "script", model: "gemini-3.6-flash", input_tokens: 1000, output_tokens: 500 }, nov), { usd: 0.002625, priced: true });
+  assert.equal(priceUsage({ kind: "script", model: "gemini-3.6-flash", input_tokens: 1000, output_tokens: 500 }, jan).usd, 0.00525);
+  // TTS without usage → 25 audio tokens per second
+  assert.equal(priceUsage({ kind: "tts", model: "gemini-3.8-flash-tts", seconds: 10 }, nov).usd, 0.00225);
+  assert.equal(estimateClipUsd({ provider: "gemini", model: "gemini-omni-1.2-flash", seconds: 10, resolution: "720p" }), 0.695);
+  assert.equal(estimateClipUsd({ provider: "seedance", model: "dreamina-x", seconds: 10, resolution: "480p" }), 1.03);
+  assert.equal(priceUsage({ kind: "image", model: "gemini-3.1-flash-image", images: 3 }).usd, 0.201);
+  assert.deepEqual(priceUsage({ kind: "script", model: "some-new-model", input_tokens: 9 }), { usd: 0, priced: false });
+});
+
+test("usage: withUsage context is attached to reported rows and sent to the sink", async () => {
+  const { withUsage, reportUsage, setUsageSink, geminiTokens } = await import("../src/usage.js");
+  const rows = [];
+  setUsageSink((r) => rows.push(r));
+  await withUsage({ userId: 5 }, () => withUsage({ productId: 37 }, async () => {
+    await new Promise((r) => setTimeout(r, 1));
+    reportUsage({ kind: "image", provider: "gemini", model: "gemini-3.1-flash-image", images: 1 });
+  }));
+  reportUsage({ kind: "tts", provider: "gemini", model: "gemini-3.8-flash-tts", output_tokens: 250 });
+  await new Promise((r) => setTimeout(r, 5));
+  setUsageSink(null);
+  assert.equal(rows.length, 2);
+  assert.deepEqual([rows[0].userId, rows[0].productId, rows[0].usd], [5, 37, 0.067]);
+  assert.equal(rows[1].userId, undefined);
+  assert.deepEqual(geminiTokens({ total_input_tokens: 10, total_output_tokens: 20, total_thought_tokens: 5 }), { input_tokens: 10, output_tokens: 25 });
+});

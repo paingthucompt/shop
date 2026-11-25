@@ -1,12 +1,13 @@
 import { Router } from "express";
 import { query, tx, changeCredits, failJob } from "@app/db";
-import { seedance } from "@app/providers";
-import { ah, requireAuth, videoQueue, mediaUrl } from "../lib.js";
-import { parseClipSource, parseId, parseLangs, parseStyle, parseVoiceSpeed, publicError, VOICE_SPEED } from "../validate.js";
+import { seedance, pricing, keys } from "@app/providers";
+import { ah, requireAuth, withUserKeys, videoQueue, mediaUrl } from "../lib.js";
+import { parseClipSource, parseId, parseLangs, parseStyle, parseVoiceSpeed, publicError, publicErrorCode, VOICE_SPEED } from "../validate.js";
 import { foreignScriptIssue } from "../script-rules.js";
 
 const r = Router();
 r.use(requireAuth);
+r.use(withUserKeys); // the user's own AI keys → their videos cost no credits
 
 const COST = () => Number(process.env.JOB_CREDIT_COST || 10);
 // the user's own clip / the already-paid scene images only need voiceover + captions: no AI video cost
@@ -17,17 +18,22 @@ async function loadJob(userId, id) {
   const { rows } = await query("SELECT * FROM video_jobs WHERE id = $1 AND user_id = $2", [id, userId]);
   const j = rows[0];
   if (!j) return null;
-  const [{ rows: vids }, { rows: refund }] = await Promise.all([
+  const [{ rows: vids }, { rows: refund }, { rows: spend }] = await Promise.all([
     query("SELECT lang, path, srt_path, duration FROM videos WHERE job_id = $1 ORDER BY lang", [id]),
     query("SELECT 1 FROM credit_ledger WHERE user_id = $1 AND reason = 'refund' AND ref = $2 LIMIT 1", [userId, String(id)]),
+    query("SELECT kind, sum(usd) AS usd, bool_or(NOT priced) AS unpriced FROM api_usage WHERE job_id = $1 GROUP BY kind ORDER BY kind", [id]),
   ]);
   return {
     id: j.id, product_id: j.product_id, langs: j.langs, status: j.status, stage: j.stage, style: j.style,
-    credits_charged: j.credits_charged, created_at: j.created_at, updated_at: j.updated_at,
-    error: j.status === "failed" ? publicError(j.error) : null,
+    credits_charged: j.credits_charged, own_key: j.own_key, created_at: j.created_at, updated_at: j.updated_at,
+    error: j.status === "failed" ? publicError(j.error, { ownKey: j.own_key }) : null,
+    error_code: j.status === "failed" ? publicErrorCode(j.error) : null,
     refunded: refund.length > 0,
     clip_url: mediaUrl(j.clip_path),
     videos: vids.map((v) => ({ lang: v.lang, duration: v.duration, url: mediaUrl(v.path), srt_url: mediaUrl(v.srt_path) })),
+    // what the job's API calls really cost (AI clip + voiceover); scripts / scene images are on the product
+    api_usd: Math.round(spend.reduce((a, s) => a + Number(s.usd), 0) * 1e4) / 1e4,
+    api_cost: spend.map((s) => ({ kind: s.kind, usd: Math.round(Number(s.usd) * 1e4) / 1e4, unpriced: s.unpriced })),
   };
 }
 
@@ -42,6 +48,7 @@ function voiceoverLabel(langs) {
 async function buildQuote(userId, productId, langs, style = "product", clipSource = "auto") {
   const { rows: [product] } = await query("SELECT * FROM products WHERE id = $1 AND user_id = $2", [productId, userId]);
   if (!product) return { status: 404, error: "product not found" };
+  if (keys.keyMissing()) return { status: 400, error: "add your own Gemini API key in Settings first", code: "need_key" };
   const [{ rows: scripts }, { rows: [user] }] = await Promise.all([
     query("SELECT lang, hook, lines, captions, cta FROM scripts WHERE product_id = $1 AND lang = ANY($2)", [productId, langs]),
     query("SELECT credits FROM users WHERE id = $1", [userId]),
@@ -63,7 +70,9 @@ async function buildQuote(userId, productId, langs, style = "product", clipSourc
     return { status: 400, error: "make all scene images first (redo the missing ones)" };
   }
   // only an AI video costs the platform real money per clip; every other clip is voiceover + captions
-  const cost = upload || clipSource === "photos" ? UPLOAD_COST() : scenes ? SCENES_VIDEO_COST() : COST();
+  // with the user's own keys every API call is on their own bill → no credits
+  const ownKey = keys.usingOwnKeys();
+  const cost = ownKey ? 0 : upload || clipSource === "photos" ? UPLOAD_COST() : scenes ? SCENES_VIDEO_COST() : COST();
   const clip = upload
     ? { mode: "upload", model: null, duration: Number(product.clip_seconds), resolution: "720p" }
     : scenes
@@ -74,6 +83,7 @@ async function buildQuote(userId, productId, langs, style = "product", clipSourc
     product_id: productId,
     langs,
     cost,
+    own_key: ownKey,
     balance,
     balance_after: balance - cost,
     enough_credits: balance >= cost,
@@ -90,6 +100,9 @@ async function buildQuote(userId, productId, langs, style = "product", clipSourc
       resolution: clip.resolution,
       reference_images: Math.min(4, (product.images || []).length),
       scene_count: clip.scene_count,
+      // US$ the AI clip will cost on the provider bill (same price table as the cost tracking)
+      api_usd: clip.mode === "seedance" || clip.mode === "gemini"
+        ? pricing.estimateClipUsd({ provider: clip.mode, model: clip.model, seconds: clip.duration, resolution: clip.resolution }) : 0,
       prompt: seedance.buildProductPrompt(product, { style }),
     },
     voiceover: voiceoverLabel(langs),
@@ -102,7 +115,7 @@ async function buildQuote(userId, productId, langs, style = "product", clipSourc
 /** GET /api/jobs/quote?product_id=1&langs=th,my — free preview, nothing is charged */
 r.get("/quote", ah(async (req, res) => {
   const q = await buildQuote(req.userId, parseId(req.query.product_id, "product_id"), parseLangs(req.query.langs), parseStyle(req.query.style), parseClipSource(req.query.clip_source));
-  if (q.error) return res.status(q.status).json({ error: q.error });
+  if (q.error) return res.status(q.status).json({ error: q.error, code: q.code });
   res.json(q);
 }));
 
@@ -120,7 +133,7 @@ r.post("/", ah(async (req, res) => {
   const voiceSpeed = parseVoiceSpeed(req.body.voice_speed, langs);
   const clipHasVoice = req.body.clip_has_voice === true;
   const q = await buildQuote(req.userId, productId, langs, style, clipSource);
-  if (q.error) return res.status(q.status).json({ error: q.error });
+  if (q.error) return res.status(q.status).json({ error: q.error, code: q.code });
   if (q.missing_scripts.length) return res.status(400).json({ error: `write the script first for: ${q.missing_scripts.join(", ")}` });
   const issues = Object.values(q.script_issues);
   if (issues.length) return res.status(400).json({ error: issues.join("; ") });
@@ -133,10 +146,10 @@ r.post("/", ah(async (req, res) => {
 
   const job = await tx(async (c) => {
     const { rows } = await c.query(
-      "INSERT INTO video_jobs (user_id, product_id, langs, credits_charged, style, clip_source, voice_speed, clip_has_voice) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",
-      [req.userId, productId, langs, q.cost, style, q.clip_source, clipHasVoice ? null : voiceSpeed && JSON.stringify(voiceSpeed), clipHasVoice], // the source the user was quoted for
+      "INSERT INTO video_jobs (user_id, product_id, langs, credits_charged, style, clip_source, voice_speed, clip_has_voice, own_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",
+      [req.userId, productId, langs, q.cost, style, q.clip_source, clipHasVoice ? null : voiceSpeed && JSON.stringify(voiceSpeed), clipHasVoice, q.own_key], // the source the user was quoted for
     );
-    await changeCredits(c, req.userId, -q.cost, "job", String(rows[0].id));
+    if (q.cost > 0) await changeCredits(c, req.userId, -q.cost, "job", String(rows[0].id));
     return rows[0];
   });
   try {
@@ -154,8 +167,9 @@ r.post("/", ah(async (req, res) => {
 r.get("/", ah(async (req, res) => {
   const { rows } = await query(
     `SELECT j.id, j.product_id, p.title AS product_title, p.images->0->>'path' AS image_path,
-            j.langs, j.status, j.stage, j.clip_source, j.style, j.credits_charged, j.clip_has_voice,
+            j.langs, j.status, j.stage, j.clip_source, j.style, j.credits_charged, j.own_key, j.clip_has_voice,
             j.created_at, j.updated_at,
+            (SELECT COALESCE(sum(u.usd), 0) FROM api_usage u WHERE u.job_id = j.id) AS api_usd,
             COALESCE((SELECT json_agg(json_build_object('lang', v.lang, 'path', v.path, 'duration', v.duration) ORDER BY v.lang)
                       FROM videos v WHERE v.job_id = j.id), '[]') AS videos,
             EXISTS (SELECT 1 FROM credit_ledger c WHERE c.user_id = j.user_id AND c.reason = 'refund' AND c.ref = j.id::text) AS refunded
@@ -164,6 +178,7 @@ r.get("/", ah(async (req, res) => {
   );
   res.json(rows.map(({ image_path: img, videos, ...j }) => ({
     ...j,
+    api_usd: Math.round(Number(j.api_usd) * 1e4) / 1e4,
     image_url: mediaUrl(img),
     videos: videos.map((v) => ({ lang: v.lang, duration: v.duration, url: mediaUrl(v.path) })),
   })));

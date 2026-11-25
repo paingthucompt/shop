@@ -8,6 +8,7 @@ import Products from "./pages/Products.jsx";
 import NewProduct from "./pages/NewProduct.jsx";
 import Product from "./pages/Product.jsx";
 import Jobs from "./pages/Jobs.jsx";
+import Settings from "./pages/Settings.jsx";
 import "./style.css";
 
 function LangSwitch({ lang, onChange }) {
@@ -36,9 +37,12 @@ function Shell({ children, lang, onLang }) {
         <nav>
           <NavLink to="/" end>{t("nav.products")}</NavLink>
           <NavLink to="/jobs">{t("nav.videos")}</NavLink>
+          <NavLink to="/settings">{t("nav.settings")}</NavLink>
         </nav>
         <div className="topbar-right">
-          {me && <span className="pill credits" title={t("nav.creditsHint")}>🪙 {t("nav.credits", { n: me.credits })}</span>}
+          {me && (me.own_key
+            ? <Link to="/settings" className="pill credits" title={t("nav.ownKeyHint")}>🔑 {t("nav.ownKey")}</Link>
+            : <span className="pill credits" title={t("nav.creditsHint")}>🪙 {t("nav.credits", { n: me.credits })}</span>)}
           <LangSwitch lang={lang} onChange={onLang} />
           <button className="btn subtle sm" onClick={() => { auth.token = null; nav("/login"); }}>{t("nav.logout")}</button>
         </div>
@@ -63,6 +67,7 @@ function App() {
         <Route path="/products/:id" element={shell(<Product />)} />
         <Route path="/jobs" element={shell(<Jobs />)} />
         <Route path="/jobs/:id" element={shell(<Jobs />)} />
+        <Route path="/settings" element={shell(<Settings />)} />
       </Routes>
     </BrowserRouter>
   );

@@ -1,6 +1,7 @@
 // Pure request-validation helpers (no DB / Redis imports, so they are unit-testable).
 import { CLIP_STYLES } from "../../../packages/providers/src/seedance.js";
 import { SCRIPT_ANGLES } from "../../../packages/providers/src/llm.js";
+import { errorCode } from "../../../packages/providers/src/api-errors.js";
 
 export function httpError(status, message) {
   const e = new Error(message);
@@ -81,8 +82,24 @@ export function isShopeeUrl(url) {
 }
 
 /** internal error text (ffmpeg stderr, provider messages) stays in the DB; users see a short reason */
-export function publicError(message) {
+// problems with the API key / its Google project — the owner of the key has to fix them
+const KEY_PROBLEM = {
+  key_invalid: "The API key was rejected. Check or replace it in Settings.",
+  key_restricted: "The API key has restrictions (IP / website / API) that block this app. Use a key without restrictions.",
+  key_suspended: "The Google Cloud project of the API key is suspended. Check it in Google Cloud Console.",
+  key_service_disabled: "The Gemini API is turned off for the API key's project. Turn it on in Google Cloud Console and try again in a few minutes.",
+  key_billing: "This needs billing turned on for the API key's project (free keys can't make AI video). Turn on billing in Google AI Studio.",
+};
+
+/** what a failed job's error is about, for the web app to translate: key_* | busy | null */
+export const publicErrorCode = (message) => errorCode(message);
+
+/** a job's error for the user: no paths / internals. ownKey: the job ran on the user's own keys (no credits) */
+export function publicError(message, { ownKey = false } = {}) {
   const m = String(message || "");
+  const code = errorCode(m);
+  if (KEY_PROBLEM[code]) return KEY_PROBLEM[code];
+  if (code === "busy" && ownKey) return "Google's AI service is busy or your key's quota is used up — please try again later.";
   if (/Seedance task (failed|expired)/i.test(m)) return "The AI clip could not be generated (Seedance). Try clearer product photos.";
   if (/Seedance task timed out/i.test(m)) return "The AI clip took too long to generate.";
   if (/^Seedance 4\d\d/i.test(m)) return "The AI clip request was rejected (Seedance).";

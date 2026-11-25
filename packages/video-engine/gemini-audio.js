@@ -6,6 +6,12 @@
 /** BCP-47 hint sent in speech_config.language, per app language */
 export const GEMINI_TTS_LANGUAGE = { th: "th-TH", my: "my-MM" };
 
+/** how the voiceover is spoken in the videos (sent as a speech_metadata style note, not read aloud) */
+export const GEMINI_STYLE = {
+  th: "a real Thai TikTok Shop creator talking to a friend: warm, upbeat, natural and conversational, lively but not shouting, a little fast-paced",
+  my: "a real Burmese (Myanmar) TikTok / Facebook seller talking to a friend: warm, upbeat, natural and conversational, lively but not shouting, a little fast-paced",
+};
+
 /** every audio block anywhere in an interaction, in document order */
 function audioBlocks(node, out = []) {
   if (!node || typeof node !== "object") return out;

@@ -42,17 +42,26 @@ export function buildConfig({ clipPath, outPath, lang, script, voice = "female",
   };
 }
 
-/** Render one language. Resolves { lang, path, srt, duration }. outPath gets a -<lang> suffix. */
-export function renderVideo({ workDir, onLog, ...opts }) {
+/**
+ * Render one language. Resolves { lang, path, srt, duration }. outPath gets a -<lang> suffix.
+ * onUsage(entry) is called for each billable API call the engine made (e.g. Gemini TTS lines).
+ * env: the environment (API keys) the engine runs with — e.g. the user's own Gemini key; default process.env.
+ */
+export function renderVideo({ workDir, onLog, onUsage, env = process.env, ...opts }) {
   mkdirSync(workDir, { recursive: true });
   const cfgPath = join(workDir, `config-${opts.lang}.json`);
   writeFileSync(cfgPath, JSON.stringify(buildConfig(opts), null, 2));
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI, cfgPath, "--lang", opts.lang], { env: process.env });
+    const child = spawn(process.execPath, [CLI, cfgPath, "--lang", opts.lang], { env });
     let out = "", err = "";
     child.stdout.on("data", (d) => { out += d; onLog?.(String(d)); });
     child.stderr.on("data", (d) => { err += d; onLog?.(String(d)); });
     child.on("close", (code) => {
+      // billed even when the render fails afterwards
+      for (const l of out.split("\n")) {
+        if (!l.startsWith("USAGE ")) continue;
+        try { onUsage?.(JSON.parse(l.slice(6))); } catch { /* a cut-off line */ }
+      }
       const line = out.split("\n").find((l) => l.startsWith("RESULT "));
       if (code === 0 && line) resolve(JSON.parse(line.slice(7)));
       else reject(new Error(`video-engine exited ${code}: ${(err || out).slice(-800)}`));

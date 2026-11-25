@@ -2,10 +2,12 @@
 // Docs: https://aistudio.google.com/docs/omni  ·  POST {base}/interactions  →  GET {base}/interactions/{id}
 // The request runs in the background and is polled, so a worker restart resumes it instead of paying twice.
 import { buildProductPrompt } from "./seedance.js";
+import { env as keyEnv } from "./keys.js";
+import { providerError } from "./api-errors.js";
 
 const cfg = () => ({
   baseUrl: (process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, ""),
-  apiKey: process.env.GEMINI_API_KEY,
+  apiKey: keyEnv().GEMINI_API_KEY,
   model: process.env.GEMINI_VIDEO_MODEL || "gemini-omni-1.2-flash",
   resolution: process.env.GEMINI_VIDEO_RESOLUTION || "720p",
   duration: geminiDuration(process.env.GEMINI_VIDEO_DURATION),
@@ -99,7 +101,7 @@ async function call(path, init = {}, { retryForMs = 30_000 } = {}) {
     }
     let json;
     try { json = JSON.parse(text); } catch { json = { raw: text }; }
-    if (!res.ok) throw new Error(`Gemini ${res.status}: ${json?.error?.message || text.slice(0, 300)}`);
+    if (!res.ok) throw new Error(providerError("Gemini", res.status, text));
     return json;
   }
 }

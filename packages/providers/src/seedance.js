@@ -2,10 +2,12 @@
 // Docs: POST {base}/contents/generations/tasks  →  GET {base}/contents/generations/tasks/{id}
 // Status: queued | running | succeeded | failed | expired
 import { geminiSettings } from "./gemini-video.js"; // circular with gemini-video.js, but only used at call time
+import { env as keyEnv } from "./keys.js";
+import { providerError } from "./api-errors.js";
 
 const cfg = () => ({
   baseUrl: process.env.SEEDANCE_BASE_URL || "https://ark.ap-southeast.bytepluses.com/api/v3",
-  apiKey: process.env.SEEDANCE_API_KEY,
+  apiKey: keyEnv().SEEDANCE_API_KEY,
   model: process.env.SEEDANCE_MODEL,
   resolution: process.env.SEEDANCE_RESOLUTION || "720p",
   duration: Number(process.env.SEEDANCE_DURATION || 10),
@@ -31,9 +33,9 @@ export function clipMode() {
 /** the AI video provider used when the user picks "AI video" for one video: Gemini, else Seedance, else null */
 export function aiVideoProvider() {
   const forced = String(process.env.AI_VIDEO_PROVIDER || "").toLowerCase();
-  if (forced === "gemini" && process.env.GEMINI_API_KEY) return "gemini";
+  if (forced === "gemini" && keyEnv().GEMINI_API_KEY) return "gemini";
   if (forced === "seedance" && seedanceEnabled()) return "seedance";
-  if (process.env.GEMINI_API_KEY) return "gemini";
+  if (keyEnv().GEMINI_API_KEY) return "gemini";
   return seedanceEnabled() ? "seedance" : null;
 }
 
@@ -148,7 +150,7 @@ async function call(path, init = {}) {
   const text = await res.text();
   let json;
   try { json = JSON.parse(text); } catch { json = { raw: text }; }
-  if (!res.ok) throw new Error(`Seedance ${res.status}: ${json?.error?.message || text.slice(0, 300)}`);
+  if (!res.ok) throw new Error(providerError("Seedance", res.status, text));
   return json;
 }
 

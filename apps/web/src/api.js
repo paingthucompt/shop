@@ -1,3 +1,4 @@
+import { errorText } from "./i18n.js";
 const TOKEN_KEY = "avs_token";
 
 export const auth = {
@@ -13,7 +14,12 @@ export async function api(path, { method = "GET", body, form } = {}) {
   if (res.status === 401) { auth.token = null; if (!location.pathname.startsWith("/login")) location.href = "/login"; }
   if (res.status === 204) return null;
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    // known codes (need_key, key_invalid …) are shown in the interface language
+    const err = new Error(errorText(data.code, data.error || `HTTP ${res.status}`));
+    err.code = data.code;
+    throw err;
+  }
   return data;
 }
 

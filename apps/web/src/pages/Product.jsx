@@ -246,7 +246,7 @@ function voiceText(v) {
 function QuotePanel({ quote, busy, speeds, onSpeed, clipVoice, onClipVoice, onConfirm, onCancel }) {
   const c = quote.clip;
   const range = quote.voice_speed_range || { min: 0.8, max: 1.5 };
-  const usd = c.mode === "gemini" || c.mode === "seedance" ? aiClipUsd(c.mode, c.duration_s, c.resolution) : 0;
+  const usd = c.api_usd ?? (c.mode === "gemini" || c.mode === "seedance" ? aiClipUsd(c.mode, c.duration_s, c.resolution) : 0);
   const blocked = (clipVoice && quote.langs.length > 1) || !quote.enough_credits || quote.missing_scripts.length > 0 || Object.keys(quote.script_issues || {}).length > 0;
   return (
     <div className="quote">
@@ -273,14 +273,19 @@ function QuotePanel({ quote, busy, speeds, onSpeed, clipVoice, onClipVoice, onCo
           ))}
           <span className="hint">{t("quote.speedHint")}</span>
         </dd></>}
-        <dt>{t("quote.cost")}</dt><dd><strong className="cost">{t("quote.credits", { n: quote.cost })}</strong> <span className="muted small">{quote.enough_credits ? t("quote.after", { b: quote.balance, a: quote.balance_after }) : t("quote.notEnough", { b: quote.balance })}</span>
-          {usd > 0 && <p className="alert warn">💳 {t("quote.apiCost", { usd: usd.toFixed(2) })}</p>}</dd>
+        <dt>{t("quote.cost")}</dt><dd>{quote.own_key ? (
+            <><strong className="cost">🔑 {t("quote.ownKey")}</strong>
+              {usd > 0 && <p className="alert warn">💳 {t("quote.ownKeyCost", { usd: usd.toFixed(2) })}</p>}</>
+          ) : (
+            <><strong className="cost">{t("quote.credits", { n: quote.cost })}</strong> <span className="muted small">{quote.enough_credits ? t("quote.after", { b: quote.balance, a: quote.balance_after }) : t("quote.notEnough", { b: quote.balance })}</span>
+              {usd > 0 && <p className="alert warn">💳 {t("quote.apiCost", { usd: usd.toFixed(2) })}</p>}</>
+          )}</dd>
       </dl>
       {c.style_applies && <details><summary>{t("quote.prompt")}</summary><pre className="prompt">{c.prompt}</pre></details>}
       {Object.entries(quote.script_issues || {}).map(([lang, issue]) => <p key={lang} className="alert bad">⚠ {LANGS[lang]}: {issue}</p>)}
       <p className="hint">{t("quote.refund")}</p>
       <div className="row">
-        <button type="button" className="btn primary lg" onClick={onConfirm} disabled={busy || blocked}>{busy ? t("quote.starting") : t("quote.confirm", { n: quote.cost })}</button>
+        <button type="button" className="btn primary lg" onClick={onConfirm} disabled={busy || blocked}>{busy ? t("quote.starting") : quote.own_key ? t("quote.confirmOwn") : t("quote.confirm", { n: quote.cost })}</button>
         <button type="button" className="btn subtle" onClick={onCancel} disabled={busy}>{t("common.cancel")}</button>
       </div>
     </div>

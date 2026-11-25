@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import pg from "pg";
 
 const { Pool } = pg;
@@ -56,4 +57,75 @@ export function failJob(jobId, message) {
     await changeCredits(c, rows[0].user_id, rows[0].credits_charged, "refund", String(jobId));
     return true;
   });
+}
+
+/** store one priced API call (see @app/providers usage.js) — the usage sink of the API and the worker */
+export function recordUsage(row) {
+  return query(
+    `INSERT INTO api_usage (user_id, product_id, job_id, kind, provider, model, input_tokens, output_tokens, seconds, images, usd, priced)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    [row.userId ?? null, row.productId ?? null, row.jobId ?? null, row.kind, row.provider || "unknown", row.model ?? null,
+      row.input_tokens ?? null, row.output_tokens ?? null, row.seconds ?? null, row.images ?? null, row.usd ?? 0, row.priced !== false],
+  );
+}
+
+// ---------------- users' own AI API keys (encrypted at rest with AES-256-GCM)
+// The encryption key comes from KEYS_SECRET (or, if unset, JWT_SECRET). Changing it makes stored keys
+// unreadable — users then simply enter their key again.
+export const KEY_PROVIDERS = ["gemini", "seedance", "openai"];
+
+function keysSecret() {
+  const s = process.env.KEYS_SECRET || process.env.JWT_SECRET || "";
+  if (s.length < 32) {
+    throw Object.assign(new Error("API keys can't be stored: set KEYS_SECRET (32+ random characters) on the server"), { status: 503, expose: true });
+  }
+  return crypto.createHash("sha256").update(`user-api-keys:${s}`).digest();
+}
+
+/** plain key → "v1:iv:tag:ciphertext" (base64) */
+export function sealKey(plain) {
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv("aes-256-gcm", keysSecret(), iv);
+  const data = Buffer.concat([c.update(String(plain), "utf8"), c.final()]);
+  return ["v1", iv, c.getAuthTag(), data].map((x) => (typeof x === "string" ? x : x.toString("base64"))).join(":");
+}
+
+/** the reverse of sealKey; throws if the secret changed or the value was tampered with */
+export function openKey(sealed) {
+  const [v, iv, tag, data] = String(sealed).split(":");
+  if (v !== "v1") throw new Error("unknown key format");
+  const d = crypto.createDecipheriv("aes-256-gcm", keysSecret(), Buffer.from(iv, "base64"));
+  d.setAuthTag(Buffer.from(tag, "base64"));
+  return Buffer.concat([d.update(Buffer.from(data, "base64")), d.final()]).toString("utf8");
+}
+
+/** what the app shows instead of the key: "AIza…x7Qk" */
+export const keyHint = (key) => `${key.slice(0, 4)}…${key.slice(-4)}`;
+
+export function saveUserKey(userId, provider, key, verified) {
+  return query(
+    `INSERT INTO user_api_keys (user_id, provider, key_enc, hint, verified_at) VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (user_id, provider) DO UPDATE SET key_enc = $3, hint = $4, verified_at = $5, updated_at = now()`,
+    [userId, provider, sealKey(key), keyHint(key), verified ? new Date() : null],
+  );
+}
+
+export const deleteUserKey = (userId, provider) =>
+  query("DELETE FROM user_api_keys WHERE user_id = $1 AND provider = $2", [userId, provider]);
+
+/** [{ provider, hint, verified_at, updated_at }] — never the key itself */
+export async function listUserKeys(userId) {
+  const { rows } = await query("SELECT provider, hint, verified_at, updated_at FROM user_api_keys WHERE user_id = $1 ORDER BY provider", [userId]);
+  return rows;
+}
+
+/** { gemini?, seedance? } decrypted, for the provider calls made for this user */
+export async function loadUserKeys(userId) {
+  if (!userId) return {};
+  const { rows } = await query("SELECT provider, key_enc FROM user_api_keys WHERE user_id = $1", [userId]);
+  const keys = {};
+  for (const r of rows) {
+    try { keys[r.provider] = openKey(r.key_enc); } catch (err) { console.warn(`[keys] user ${userId} ${r.provider} key unreadable: ${err.message}`); }
+  }
+  return keys;
 }

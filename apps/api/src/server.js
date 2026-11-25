@@ -3,12 +3,17 @@ import helmet from "helmet";
 import cors from "cors";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { join, normalize, resolve, sep } from "node:path";
-import { query } from "@app/db";
-import { shopee } from "@app/providers";
+import { query, recordUsage } from "@app/db";
+import { shopee, usage } from "@app/providers";
 import { ah, requireAuth, STORAGE_DIR, verifyMedia } from "./lib.js";
 import authRoutes from "./routes/auth.js";
 import productRoutes from "./routes/products.js";
 import jobRoutes from "./routes/jobs.js";
+import usageRoutes from "./routes/usage.js";
+import keyRoutes from "./routes/keys.js";
+
+// cost tracking: every priced API call made while serving a request is stored in api_usage
+usage.setUsageSink(recordUsage);
 
 const app = express();
 app.disable("x-powered-by");
@@ -25,6 +30,8 @@ app.get("/api/health", ah(async (_req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/jobs", jobRoutes);
+app.use("/api/usage", usageRoutes);
+app.use("/api/keys", keyRoutes);
 
 // Shopee affiliate product search (uses the platform's Shopee credentials)
 app.get("/api/shopee/search", requireAuth, ah(async (req, res) => {
@@ -66,7 +73,9 @@ if (WEB_DIST && existsSync(join(WEB_DIST, "index.html"))) {
 app.use((err, _req, res, _next) => {
   const status = err.status || (err.name === "MulterError" ? 400 : 500);
   if (status >= 500) console.error(err);
-  res.status(status).json({ error: status >= 500 && !err.expose ? "server error" : err.message });
+  // code: a machine-readable reason the web app acts on (e.g. "need_key" → link to Settings)
+  const code = status < 500 && typeof err.code === "string" && /^[a-z_]+$/.test(err.code) ? { code: err.code } : {};
+  res.status(status).json({ error: status >= 500 && !err.expose ? "server error" : err.message, ...code });
 });
 
 // Cloud Run sets PORT and needs 0.0.0.0; locally stay on loopback

@@ -3,6 +3,8 @@ import { resolve, relative, sep } from "node:path";
 import jwt from "jsonwebtoken";
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
+import { loadUserKeys } from "@app/db";
+import { keys } from "@app/providers";
 
 export const STORAGE_DIR = resolve(process.env.STORAGE_DIR || "./storage");
 
@@ -63,3 +65,16 @@ export function verifyMedia(rel, exp, sig) {
 
 /** wrap async route handlers so errors reach the error middleware */
 export const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+// ---------------- whose AI keys a request uses (after requireAuth)
+// the user's own Gemini / Seedance keys when they added them (no credits charged), else the server's
+export function withUserKeys(req, _res, next) {
+  loadUserKeys(req.userId).then((k) => keys.withKeys(keys.userKeyContext(k), next), next);
+}
+
+/** OWN_KEYS_ONLY and the user hasn't added their Gemini key yet → 400 the web app turns into a Settings link */
+export function requireKey() {
+  if (keys.keyMissing()) {
+    throw Object.assign(new Error("add your own Gemini API key in Settings first"), { status: 400, code: "need_key" });
+  }
+}

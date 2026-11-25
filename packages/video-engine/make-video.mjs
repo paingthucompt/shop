@@ -15,7 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as hb from "harfbuzzjs";
 import { ttsProviderFor } from "./tts-provider.js";
-import { geminiAudio, GEMINI_TTS_LANGUAGE } from "./gemini-audio.js";
+import { geminiAudio, GEMINI_TTS_LANGUAGE, GEMINI_STYLE } from "./gemini-audio.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FONT_DIR = join(HERE, "fonts");
@@ -181,14 +181,21 @@ async function ttsAzure(text, voice, rate, outFile) {
 
 // Gemini TTS: the text is spoken verbatim; delivery is steered by a style note, not by the text.
 // One request per line, so every line gets the same voice + style for a consistent read.
-const GEMINI_STYLE = {
-  th: "a real Thai TikTok Shop creator talking to a friend: warm, upbeat, natural and conversational, lively but not shouting, a little fast-paced",
-  my: "a real Burmese (Myanmar) TikTok / Facebook seller talking to a friend: warm, upbeat, natural and conversational, lively but not shouting, a little fast-paced",
-};
+// GEMINI_STYLE (the delivery note per language) lives in gemini-audio.js, shared with `npm run voice -- say`
 // a prebuilt voice (Leda, Kore …) or your own custom voice_<id> from `npm run voice` (tools/gemini-voice.mjs)
 const geminiVoice = (lang) => process.env[`GEMINI_TTS_VOICE_${lang.toUpperCase()}`] || process.env.GEMINI_TTS_VOICE || "Leda";
 // "off" → no language hint; set once per run when the API rejects the hint for a language
 const ttsLanguageOff = new Set(process.env.GEMINI_TTS_LANGUAGE === "off" ? ["th", "my"] : []);
+
+// cost tracking: the parent process (renderVideo) reads "USAGE {…}" lines and stores them
+function reportTtsUsage(model, u, out) {
+  const seconds = out.ext === "wav" ? Math.max(0, out.audio.length - 44) / 48_000 : null; // 24 kHz mono 16-bit
+  console.log(`USAGE ${JSON.stringify({
+    kind: "tts", provider: "gemini", model,
+    input_tokens: u?.total_input_tokens ?? null, output_tokens: u?.total_output_tokens ?? null,
+    seconds: seconds == null ? null : +seconds.toFixed(2),
+  })}`);
+}
 
 async function ttsGemini(text, lang, outFile) {
   const key = process.env.GEMINI_API_KEY;
@@ -215,12 +222,16 @@ async function ttsGemini(text, lang, outFile) {
     });
     const textBody = await res.text();
     if (res.ok) {
-      const out = geminiAudio(JSON.parse(textBody)); // joins all audio blocks; raw PCM gets a WAV header
+      const reply = JSON.parse(textBody);
+      const out = geminiAudio(reply); // joins all audio blocks; raw PCM gets a WAV header
       if (!out) throw new Error("Gemini TTS returned no audio");
       writeFileSync(outFile, out.audio);
+      reportTtsUsage(body.model, reply.usage, out);
       return;
     }
-    last = `${res.status}: ${textBody.slice(0, 200)}`;
+    // the reason first (API_KEY_INVALID, BILLING_DISABLED …) so the app can tell the user what to fix
+    const reason = (textBody.match(/"reason"\s*:\s*"([A-Z_]+)"/) || [])[1];
+    last = `${res.status}${reason ? ` [${reason}]` : ""}: ${textBody.slice(0, 200)}`;
     // the language hint isn't accepted for this language → drop it for the rest of the run and retry at once
     if (res.status === 400 && body.generation_config.speech_config[0].language && /language/i.test(textBody)) {
       console.warn(`⚠ Gemini TTS rejected language ${GEMINI_TTS_LANGUAGE[lang]} — retrying without it`);
